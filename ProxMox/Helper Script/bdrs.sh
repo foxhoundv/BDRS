@@ -20,10 +20,10 @@ header_info() {
   clear
   echo -e "${BL}"
   cat <<'EOF'
- ______  ______   ______    _______
-|   __ \|   _  \ |   __ \  |     __|
-|   __ <|   |   ||      <  |__     |
-|______/|___|___||___|__| |_______|
+ ______  ______   ______ _______
+ |_____] |     \ |_____/ |______
+ |_____] |_____/ |    \_ ______|
+                                
 EOF
   echo -e "${CL}Broadcast Distribution RTA System - Proxmox Bootstrap"
   echo -e "${YW}This wizard collects first-run answers and generates Proxmox config templates.${CL}"
