@@ -87,9 +87,10 @@ pick_usb_vendor_product() {
   local default_id="$1"
   local required_profile="${2:-any}"
   local chosen="${default_id}"
+  PICKED_USB_ID="${default_id}"
 
   if ! list_usb_candidates; then
-    printf '%s' "${chosen}"
+    PICKED_USB_ID="${chosen}"
     return 0
   fi
 
@@ -109,7 +110,7 @@ pick_usb_vendor_product() {
     fi
     if [[ "${pick}" =~ ^[0-9]+$ ]]; then
       if [[ "${pick}" == "0" ]]; then
-        printf '%s' "${chosen}"
+        PICKED_USB_ID="${chosen}"
         return 0
       fi
       if (( pick >= 1 && pick <= ${#USB_IDS[@]} )); then
@@ -125,7 +126,7 @@ pick_usb_vendor_product() {
 
         chosen="${USB_IDS[pick-1]}"
         msg_ok "Selected USB ID ${chosen}"
-        printf '%s' "${chosen}"
+        PICKED_USB_ID="${chosen}"
         return 0
       fi
     fi
@@ -388,7 +389,8 @@ ask_input AUDIO_DEVICE_TYPE "Audio source type" "WING"
 USB_ID_DEFAULT=""
 if [[ "${AUDIO_DEVICE_TYPE,,}" == "wing" || "${AUDIO_DEVICE_TYPE,,}" == *"behringer"* ]]; then
   msg_ok "Scanning USB hardware to help prefill audio vendor:product ID..."
-  USB_ID_DEFAULT="$(pick_usb_vendor_product "" "wing")"
+  pick_usb_vendor_product "" "wing"
+  USB_ID_DEFAULT="${PICKED_USB_ID}"
 fi
 
 ask_input AUDIO_VENDOR_PRODUCT "USB vendor:product (optional now, fill when known)" "${USB_ID_DEFAULT}"
