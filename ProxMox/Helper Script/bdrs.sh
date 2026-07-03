@@ -119,10 +119,11 @@ ask_choice() {
 
 header_info
 
-section "Proxmox Core"
-ask_input PVE_HOST "Proxmox host or IP" "192.168.1.57"
-ask_input PVE_PORT "Proxmox API/UI port" "8006"
-ask_input PVE_NODE "Proxmox node name" "pve"
+# This helper is intended to run directly on the Proxmox host.
+PVE_HOST="127.0.0.1"
+PVE_PORT="8006"
+PVE_NODE="$(hostname -s 2>/dev/null || echo pve)"
+msg_ok "Detected Proxmox context: ${PVE_HOST}:${PVE_PORT} (node ${PVE_NODE})"
 
 section "Container Template"
 ask_choice TEMPLATE_CHOICE "Template choice (ubuntu-24.04 | ubuntu-22.04 | debian-12)" "ubuntu-24.04" "ubuntu-24.04" "ubuntu-22.04" "debian-12"
@@ -194,7 +195,7 @@ ask_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "y
 
 echo
 echo -e "${BL}Configuration Summary${CL}"
-echo "- Proxmox: ${PVE_HOST}:${PVE_PORT} (node ${PVE_NODE})"
+echo "- Proxmox (auto-detected): ${PVE_HOST}:${PVE_PORT} (node ${PVE_NODE})"
 echo "- Template: ${TEMPLATE_CHOICE} -> ${TEMPLATE_PATH}"
 echo "- Network mode: ${NETWORK_MODE}"
 echo "- IDs: audio=${VMID_AUDIO}, control=${VMID_CONTROL}, recording=${VMID_RECORDING}"
