@@ -51,48 +51,46 @@ msg_error() {
 list_recording_passthrough_candidates() {
   RECORDING_REFS=()
   RECORDING_LABELS=()
+  local found_count=0
 
   # Try to find raw disks via /dev/disk/by-id
   if [[ -d /dev/disk/by-id ]]; then
-    local disk_symlinks
-    disk_symlinks=$(find -L /dev/disk/by-id -maxdepth 1 -type l ! -name '*-part*' 2>/dev/null | sort) || disk_symlinks=""
-    if [[ -n "${disk_symlinks}" ]]; then
-      while IFS= read -r disk_path; do
-        [[ -z "${disk_path}" ]] && continue
-        local disk_basename
-        disk_basename=$(basename "${disk_path}")
-        RECORDING_REFS+=("scsi0:${disk_basename}")
-        RECORDING_LABELS+=("Raw disk via /dev/disk/by-id/${disk_basename}")
-      done <<< "${disk_symlinks}"
-    fi
+    while IFS= read -r disk_path; do
+      [[ -z "${disk_path}" ]] && continue
+      local disk_basename
+      disk_basename=$(basename "${disk_path}")
+      RECORDING_REFS+=("scsi0:${disk_basename}")
+      RECORDING_LABELS+=("Raw disk /dev/disk/by-id/${disk_basename}")
+      ((found_count++))
+    done < <(find -L /dev/disk/by-id -maxdepth 1 -type l ! -name '*-part*' 2>/dev/null | sort)
   fi
 
   # Try to find PCI storage devices via lspci
   if command -v lspci >/dev/null 2>&1; then
-    local pci_lines
-    pci_lines=$(lspci 2>/dev/null | grep -Ei 'non-volatile memory|nvme|sata|storage|raid' || true)
-    if [[ -n "${pci_lines}" ]]; then
-      while IFS= read -r line; do
-        [[ -z "${line}" ]] && continue
-        if [[ "${line}" =~ ^([0-9a-fA-F:.]+)[[:space:]]+(.*)$ ]]; then
-          RECORDING_REFS+=("hostpci0:${BASH_REMATCH[1]}")
-          RECORDING_LABELS+=("PCI device ${BASH_REMATCH[1]} - ${BASH_REMATCH[2]}")
-        fi
-      done <<< "${pci_lines}"
-    fi
-  fi
-
-  # Also check for /dev/sd* and /dev/nvme* devices directly
-  if [[ -e /dev/sda || -e /dev/nvme0n1 ]]; then
-    for device in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
-      if [[ -b "${device}" ]] && ! grep -q "${device}" /proc/mounts 2>/dev/null; then
-        local dev_name
-        dev_name=$(basename "${device}")
-        RECORDING_REFS+=("scsi0:${dev_name}")
-        RECORDING_LABELS+=("Physical device ${dev_name} (direct passthrough)")
+    lspci 2>/dev/null | while IFS= read -r line; do
+      [[ -z "${line}" ]] && continue
+      if [[ "${line}" =~ ^([0-9a-fA-F:.]+)[[:space:]]+(.*)$ ]]; then
+        case "${BASH_REMATCH[2]}" in
+          *"SATA"*|*"RAID"*|*"NVMe"*|*"storage"*|*"mass"*)
+            RECORDING_REFS+=("hostpci0:${BASH_REMATCH[1]}")
+            RECORDING_LABELS+=("PCI ${BASH_REMATCH[1]}: ${BASH_REMATCH[2]}")
+            ((found_count++))
+            ;;
+        esac
       fi
     done
   fi
+
+  # Also check for /dev/sd* and /dev/nvme* devices directly
+  for device in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
+    if [[ -b "${device}" ]] 2>/dev/null && ! grep -q "^${device}" /proc/mounts 2>/dev/null; then
+      local dev_name
+      dev_name=$(basename "${device}")
+      RECORDING_REFS+=("scsi0:${dev_name}")
+      RECORDING_LABELS+=("Physical device ${dev_name}")
+      ((found_count++))
+    fi
+  done
 
   return 0
 }
@@ -105,31 +103,33 @@ pick_recording_passthrough_ref() {
 
   echo
   if [[ ${#RECORDING_REFS[@]} -gt 0 ]]; then
-    echo -e "${BL}Detected Recording Passthrough Candidates:${CL}"
+    echo -e "${BL}Detected Recording Passthrough Options:${CL}"
     local i
     for i in "${!RECORDING_REFS[@]}"; do
-      printf "  %2d) %-40s %s\n" "$((i + 1))" "${RECORDING_REFS[i]}" "${RECORDING_LABELS[i]}"
+      printf "  %d) %s\n" "$((i + 1))" "${RECORDING_LABELS[i]}"
     done
-    echo "   0) Enter manually / skip"
+    echo "  0) Don't use passthrough (will need virtual disk on recording VM)"
   else
-    echo -e "${YW}No auto-detected recording passthrough candidates.${CL}"
-    echo "   0) Enter manually"
+    echo -e "${YW}No storage devices auto-detected for passthrough.${CL}"
+    echo "  Ensure you're running this on a Proxmox host with attached storage."
+    echo "  0) Continue without passthrough"
   fi
 
   while true; do
     local pick
-    read -r -p $'\nSelect recording passthrough option [0]: ' pick
+    read -r -p $'\nChoice [0]: ' pick
     if [[ -z "${pick}" ]]; then
       pick="0"
     fi
     if [[ "${pick}" =~ ^[0-9]+$ ]]; then
       if [[ "${pick}" == "0" ]]; then
-        msg_ok "Recording passthrough ref set to: ${PICKED_RECORDING_REF}"
+        PICKED_RECORDING_REF=""
+        msg_ok "Recording will use virtual disk (passthrough disabled)"
         return 0
       fi
       if (( pick >= 1 && pick <= ${#RECORDING_REFS[@]} )); then
         PICKED_RECORDING_REF="${RECORDING_REFS[pick-1]}"
-        msg_ok "Selected recording passthrough ref: ${PICKED_RECORDING_REF}"
+        msg_ok "Selected passthrough: ${PICKED_RECORDING_REF}"
         return 0
       fi
     fi
@@ -503,17 +503,15 @@ ask_input REC_MEM "recording VM memory MB" "8192"
 section "Recording and Audio"
 ask_choice RECORDING_DISK_MODE "recording disk mode (virtual-disk | nvme-passthrough)" "virtual-disk" "virtual-disk" "nvme-passthrough"
 
-RECORDING_PASSTHROUGH_DEFAULT=""
+RECORDING_PASSTHROUGH=""
 if [[ "${RECORDING_DISK_MODE}" == "nvme-passthrough" ]]; then
   msg_ok "Scanning for recording passthrough candidates..."
   pick_recording_passthrough_ref ""
-  RECORDING_PASSTHROUGH_DEFAULT="${PICKED_RECORDING_REF}"
-  if [[ -n "${RECORDING_PASSTHROUGH_DEFAULT}" ]]; then
-    msg_warn "Use hostpci0:0000:xx:yy.z for PCI passthrough or scsi0:/dev/disk/by-id/... for raw disk passthrough."
+  RECORDING_PASSTHROUGH="${PICKED_RECORDING_REF}"
+  if [[ -z "${RECORDING_PASSTHROUGH}" ]]; then
+    ask_input RECORDING_PASSTHROUGH "recording passthrough ref (optional, e.g. hostpci0:0000:03:00.0)" ""
   fi
 fi
-
-ask_input RECORDING_PASSTHROUGH "recording passthrough ref (hostpci0/scsi ref, optional)" "${RECORDING_PASSTHROUGH_DEFAULT}"
 
 ask_input AUDIO_DEVICE_TYPE "Audio source type" "WING"
 
