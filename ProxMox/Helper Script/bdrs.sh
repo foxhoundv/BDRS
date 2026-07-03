@@ -52,27 +52,46 @@ list_recording_passthrough_candidates() {
   RECORDING_REFS=()
   RECORDING_LABELS=()
 
+  # Try to find raw disks via /dev/disk/by-id
   if [[ -d /dev/disk/by-id ]]; then
-    while IFS= read -r disk_path; do
-      [[ -z "${disk_path}" ]] && continue
-      RECORDING_REFS+=("scsi0:${disk_path}")
-      RECORDING_LABELS+=("Raw disk passthrough via ${disk_path}")
-    done < <(find -L /dev/disk/by-id -maxdepth 1 -type l ! -name '*-part*' 2>/dev/null | sort)
+    local disk_symlinks
+    disk_symlinks=$(find -L /dev/disk/by-id -maxdepth 1 -type l ! -name '*-part*' 2>/dev/null | sort) || disk_symlinks=""
+    if [[ -n "${disk_symlinks}" ]]; then
+      while IFS= read -r disk_path; do
+        [[ -z "${disk_path}" ]] && continue
+        local disk_basename
+        disk_basename=$(basename "${disk_path}")
+        RECORDING_REFS+=("scsi0:${disk_basename}")
+        RECORDING_LABELS+=("Raw disk via /dev/disk/by-id/${disk_basename}")
+      done <<< "${disk_symlinks}"
+    fi
   fi
 
+  # Try to find PCI storage devices via lspci
   if command -v lspci >/dev/null 2>&1; then
-    while IFS= read -r line; do
-      [[ -z "${line}" ]] && continue
-      if [[ "${line}" =~ ^([0-9a-fA-F:.]+)[[:space:]]+(.*)$ ]]; then
-        RECORDING_REFS+=("hostpci0:${BASH_REMATCH[1]}")
-        RECORDING_LABELS+=("PCI passthrough via ${BASH_REMATCH[1]} - ${BASH_REMATCH[2]}")
-      fi
-    done < <(lspci 2>/dev/null | grep -Ei 'non-volatile memory|nvme|sata controller|raid bus controller|sas|storage' || true)
+    local pci_lines
+    pci_lines=$(lspci 2>/dev/null | grep -Ei 'non-volatile memory|nvme|sata|storage|raid' || true)
+    if [[ -n "${pci_lines}" ]]; then
+      while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        if [[ "${line}" =~ ^([0-9a-fA-F:.]+)[[:space:]]+(.*)$ ]]; then
+          RECORDING_REFS+=("hostpci0:${BASH_REMATCH[1]}")
+          RECORDING_LABELS+=("PCI device ${BASH_REMATCH[1]} - ${BASH_REMATCH[2]}")
+        fi
+      done <<< "${pci_lines}"
+    fi
   fi
 
-  if [[ ${#RECORDING_REFS[@]} -eq 0 ]]; then
-    msg_warn "No recording passthrough candidates were auto-detected."
-    return 1
+  # Also check for /dev/sd* and /dev/nvme* devices directly
+  if [[ -e /dev/sda || -e /dev/nvme0n1 ]]; then
+    for device in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
+      if [[ -b "${device}" ]] && ! grep -q "${device}" /proc/mounts 2>/dev/null; then
+        local dev_name
+        dev_name=$(basename "${device}")
+        RECORDING_REFS+=("scsi0:${dev_name}")
+        RECORDING_LABELS+=("Physical device ${dev_name} (direct passthrough)")
+      fi
+    done
   fi
 
   return 0
@@ -82,31 +101,35 @@ pick_recording_passthrough_ref() {
   local default_ref="$1"
   PICKED_RECORDING_REF="${default_ref}"
 
-  if ! list_recording_passthrough_candidates; then
-    return 0
-  fi
+  list_recording_passthrough_candidates
 
   echo
-  echo -e "${BL}Detected Recording Passthrough Candidates${CL}"
-  local i
-  for i in "${!RECORDING_REFS[@]}"; do
-    printf "%2d) %s\n    %s\n" "$((i + 1))" "${RECORDING_REFS[i]}" "${RECORDING_LABELS[i]}"
-  done
-  echo " 0) Enter manually / skip"
+  if [[ ${#RECORDING_REFS[@]} -gt 0 ]]; then
+    echo -e "${BL}Detected Recording Passthrough Candidates:${CL}"
+    local i
+    for i in "${!RECORDING_REFS[@]}"; do
+      printf "  %2d) %-40s %s\n" "$((i + 1))" "${RECORDING_REFS[i]}" "${RECORDING_LABELS[i]}"
+    done
+    echo "   0) Enter manually / skip"
+  else
+    echo -e "${YW}No auto-detected recording passthrough candidates.${CL}"
+    echo "   0) Enter manually"
+  fi
 
   while true; do
     local pick
-    read -r -p "Select recording passthrough option [0]: " pick
+    read -r -p $'\nSelect recording passthrough option [0]: ' pick
     if [[ -z "${pick}" ]]; then
       pick="0"
     fi
     if [[ "${pick}" =~ ^[0-9]+$ ]]; then
       if [[ "${pick}" == "0" ]]; then
+        msg_ok "Recording passthrough ref set to: ${PICKED_RECORDING_REF}"
         return 0
       fi
       if (( pick >= 1 && pick <= ${#RECORDING_REFS[@]} )); then
         PICKED_RECORDING_REF="${RECORDING_REFS[pick-1]}"
-        msg_ok "Selected recording passthrough ref ${PICKED_RECORDING_REF}"
+        msg_ok "Selected recording passthrough ref: ${PICKED_RECORDING_REF}"
         return 0
       fi
     fi
