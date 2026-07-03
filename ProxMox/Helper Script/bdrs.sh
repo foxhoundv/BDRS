@@ -85,6 +85,7 @@ list_usb_candidates() {
 
 pick_usb_vendor_product() {
   local default_id="$1"
+  local required_profile="${2:-any}"
   local chosen="${default_id}"
 
   if ! list_usb_candidates; then
@@ -112,6 +113,16 @@ pick_usb_vendor_product() {
         return 0
       fi
       if (( pick >= 1 && pick <= ${#USB_IDS[@]} )); then
+        local selected_label="${USB_LABELS[pick-1]}"
+        local selected_label_lc="${selected_label,,}"
+
+        if [[ "${required_profile}" == "wing" ]]; then
+          if [[ "${selected_label_lc}" != *"wing"* && "${selected_label_lc}" != *"behringer"* ]]; then
+            msg_error "No Wing device found on USB selection ${pick}! Please choose a different one."
+            continue
+          fi
+        fi
+
         chosen="${USB_IDS[pick-1]}"
         msg_ok "Selected USB ID ${chosen}"
         printf '%s' "${chosen}"
@@ -377,7 +388,7 @@ ask_input AUDIO_DEVICE_TYPE "Audio source type" "WING"
 USB_ID_DEFAULT=""
 if [[ "${AUDIO_DEVICE_TYPE,,}" == "wing" || "${AUDIO_DEVICE_TYPE,,}" == *"behringer"* ]]; then
   msg_ok "Scanning USB hardware to help prefill audio vendor:product ID..."
-  USB_ID_DEFAULT="$(pick_usb_vendor_product "")"
+  USB_ID_DEFAULT="$(pick_usb_vendor_product "" "wing")"
 fi
 
 ask_input AUDIO_VENDOR_PRODUCT "USB vendor:product (optional now, fill when known)" "${USB_ID_DEFAULT}"
