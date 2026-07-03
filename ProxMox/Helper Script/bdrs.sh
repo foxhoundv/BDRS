@@ -48,6 +48,72 @@ msg_error() {
   echo -e "${RD}[ERROR]${CL} $1"
 }
 
+list_recording_passthrough_candidates() {
+  RECORDING_REFS=()
+  RECORDING_LABELS=()
+
+  if [[ -d /dev/disk/by-id ]]; then
+    while IFS= read -r disk_path; do
+      [[ -z "${disk_path}" ]] && continue
+      RECORDING_REFS+=("scsi0:${disk_path}")
+      RECORDING_LABELS+=("Raw disk passthrough via ${disk_path}")
+    done < <(find -L /dev/disk/by-id -maxdepth 1 -type l ! -name '*-part*' 2>/dev/null | sort)
+  fi
+
+  if command -v lspci >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      [[ -z "${line}" ]] && continue
+      if [[ "${line}" =~ ^([0-9a-fA-F:.]+)[[:space:]]+(.*)$ ]]; then
+        RECORDING_REFS+=("hostpci0:${BASH_REMATCH[1]}")
+        RECORDING_LABELS+=("PCI passthrough via ${BASH_REMATCH[1]} - ${BASH_REMATCH[2]}")
+      fi
+    done < <(lspci 2>/dev/null | grep -Ei 'non-volatile memory|nvme|sata controller|raid bus controller|sas|storage' || true)
+  fi
+
+  if [[ ${#RECORDING_REFS[@]} -eq 0 ]]; then
+    msg_warn "No recording passthrough candidates were auto-detected."
+    return 1
+  fi
+
+  return 0
+}
+
+pick_recording_passthrough_ref() {
+  local default_ref="$1"
+  PICKED_RECORDING_REF="${default_ref}"
+
+  if ! list_recording_passthrough_candidates; then
+    return 0
+  fi
+
+  echo
+  echo -e "${BL}Detected Recording Passthrough Candidates${CL}"
+  local i
+  for i in "${!RECORDING_REFS[@]}"; do
+    printf "%2d) %s\n    %s\n" "$((i + 1))" "${RECORDING_REFS[i]}" "${RECORDING_LABELS[i]}"
+  done
+  echo " 0) Enter manually / skip"
+
+  while true; do
+    local pick
+    read -r -p "Select recording passthrough option [0]: " pick
+    if [[ -z "${pick}" ]]; then
+      pick="0"
+    fi
+    if [[ "${pick}" =~ ^[0-9]+$ ]]; then
+      if [[ "${pick}" == "0" ]]; then
+        return 0
+      fi
+      if (( pick >= 1 && pick <= ${#RECORDING_REFS[@]} )); then
+        PICKED_RECORDING_REF="${RECORDING_REFS[pick-1]}"
+        msg_ok "Selected recording passthrough ref ${PICKED_RECORDING_REF}"
+        return 0
+      fi
+    fi
+    msg_error "Invalid selection. Choose 0-${#RECORDING_REFS[@]}."
+  done
+}
+
 list_usb_candidates() {
   if ! command -v lsusb >/dev/null 2>&1; then
     msg_warn "lsusb not found. Install usbutils to enable USB auto-detection."
@@ -179,6 +245,33 @@ ask_bool() {
   printf -v "${key}" '%s' "${value}"
 }
 
+ask_secret_confirm() {
+  local key="$1"
+  local question="$2"
+  local first
+  local second
+
+  while true; do
+    read -r -s -p "${question}: " first
+    echo
+    if [[ -z "${first}" ]]; then
+      msg_error "Password cannot be empty."
+      continue
+    fi
+
+    read -r -s -p "Confirm ${question,,}: " second
+    echo
+
+    if [[ "${first}" != "${second}" ]]; then
+      msg_error "Passwords do not match. Please try again."
+      continue
+    fi
+
+    printf -v "${key}" '%s' "${first}"
+    return 0
+  done
+}
+
 ask_choice() {
   local key="$1"
   local question="$2"
@@ -243,6 +336,7 @@ apply_generated_resources() {
     --rootfs "${STORAGE_AUDIO}:${AUDIO_ROOTFS}" \
     --memory "${AUDIO_MEM}" \
     --cores "${AUDIO_CORES}" \
+    --password "${LXC_ROOT_PASSWORD}" \
     --swap 0 \
     --net0 "${AUDIO_NET_SPEC}" \
     --unprivileged 0 \
@@ -262,6 +356,7 @@ EOF
     --rootfs "${STORAGE_CONTROL}:${CONTROL_ROOTFS}" \
     --memory "${CONTROL_MEM}" \
     --cores "${CONTROL_CORES}" \
+    --password "${LXC_ROOT_PASSWORD}" \
     --swap 0 \
     --net0 "${CONTROL_NET0_SPEC}" \
     --net1 "${CONTROL_NET1_SPEC}" \
@@ -291,6 +386,8 @@ EOF
   else
     msg_warn "Recording VM created without storage passthrough option."
   fi
+
+  msg_warn "Recording VM guest credentials are not set by this script because no OS is installed in the VM yet."
 
   if [[ "${AUDIO_UDEV}" == "true" && -f "${OUTPUT_DIR}/99-wing.rules" ]]; then
     msg_warn "Udev rule file generated at ${OUTPUT_DIR}/99-wing.rules - copy it into the audio-engine LXC once USB IDs are finalized."
@@ -382,7 +479,18 @@ ask_input REC_MEM "recording VM memory MB" "8192"
 
 section "Recording and Audio"
 ask_choice RECORDING_DISK_MODE "recording disk mode (virtual-disk | nvme-passthrough)" "virtual-disk" "virtual-disk" "nvme-passthrough"
-ask_input RECORDING_PASSTHROUGH "recording passthrough ref (hostpci0/scsi ref, optional)" ""
+
+RECORDING_PASSTHROUGH_DEFAULT=""
+if [[ "${RECORDING_DISK_MODE}" == "nvme-passthrough" ]]; then
+  msg_ok "Scanning for recording passthrough candidates..."
+  pick_recording_passthrough_ref ""
+  RECORDING_PASSTHROUGH_DEFAULT="${PICKED_RECORDING_REF}"
+  if [[ -n "${RECORDING_PASSTHROUGH_DEFAULT}" ]]; then
+    msg_warn "Use hostpci0:0000:xx:yy.z for PCI passthrough or scsi0:/dev/disk/by-id/... for raw disk passthrough."
+  fi
+fi
+
+ask_input RECORDING_PASSTHROUGH "recording passthrough ref (hostpci0/scsi ref, optional)" "${RECORDING_PASSTHROUGH_DEFAULT}"
 
 ask_input AUDIO_DEVICE_TYPE "Audio source type" "WING"
 
@@ -399,6 +507,7 @@ ask_bool AUDIO_UDEV "Generate ALSA udev rule file" "yes"
 section "Bootstrap Behavior"
 ask_choice FIREWALL_PROFILE "Firewall profile (strict | default | open)" "default" "strict" "default" "open"
 ask_input STARTUP_ORDER "Startup order" "control-plane,audio-engine,recording"
+ask_secret_confirm LXC_ROOT_PASSWORD "LXC root password"
 ask_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "yes"
 ask_bool APPLY_NOW "Create the LXC/VM resources now on this Proxmox host" "yes"
 ask_bool START_NOW "Start resources immediately after creation" "yes"
@@ -477,7 +586,8 @@ cat > "${CONFIG_JSON}" <<EOF
   "bootstrap": {
     "firewallProfile": "${FIREWALL_PROFILE}",
     "startupOrder": "${STARTUP_ORDER}",
-    "installBuildTooling": ${INSTALL_BUILD_TOOLING}
+    "installBuildTooling": ${INSTALL_BUILD_TOOLING},
+    "lxcRootPasswordSet": true
   }
 }
 EOF
