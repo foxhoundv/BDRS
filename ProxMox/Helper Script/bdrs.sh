@@ -5,47 +5,127 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/generated"
 mkdir -p "${OUTPUT_DIR}"
 
-prompt() {
+# shellcheck disable=SC2034
+YW='\033[33m'
+# shellcheck disable=SC2034
+GN='\033[1;92m'
+# shellcheck disable=SC2034
+RD='\033[01;31m'
+# shellcheck disable=SC2034
+BL='\033[36m'
+# shellcheck disable=SC2034
+CL='\033[m'
+
+header_info() {
+  clear
+  echo -e "${BL}"
+  cat <<'EOF'
+ ______  ______   ______    _______
+|   __ \|   _  \ |   __ \  |     __|
+|   __ <|   |   ||      <  |__     |
+|______/|___|___||___|__| |_______|
+EOF
+  echo -e "${CL}Broadcast Distribution RTA System - Proxmox Bootstrap"
+  echo -e "${YW}This wizard collects first-run answers and generates Proxmox config templates.${CL}"
+  echo
+}
+
+section() {
+  local title="$1"
+  echo
+  echo -e "${GN}== ${title} ==${CL}"
+}
+
+msg_ok() {
+  echo -e "${GN}[OK]${CL} $1"
+}
+
+msg_warn() {
+  echo -e "${YW}[WARN]${CL} $1"
+}
+
+msg_error() {
+  echo -e "${RD}[ERROR]${CL} $1"
+}
+
+ask_input() {
   local key="$1"
   local question="$2"
   local default="$3"
   local value
-  read -r -p "${question} [${default}]: " value
-  if [[ -z "${value}" ]]; then
-    value="${default}"
-  fi
+  while true; do
+    read -r -p "${question} [${default}]: " value
+    if [[ -z "${value}" ]]; then
+      value="${default}"
+    fi
+    if [[ -n "${value}" ]]; then
+      break
+    fi
+  done
   printf -v "${key}" '%s' "${value}"
 }
 
-prompt_bool() {
+ask_bool() {
   local key="$1"
   local question="$2"
   local default="$3"
   local value
-  read -r -p "${question} [${default}] (yes/no): " value
-  value="${value,,}"
-  if [[ -z "${value}" ]]; then
-    value="${default}"
-  fi
-  case "${value}" in
-    y|yes|true|1) value="true" ;;
-    n|no|false|0) value="false" ;;
-    *)
-      echo "Invalid input for ${key}. Use yes or no."
-      exit 1
-      ;;
-  esac
+  while true; do
+    read -r -p "${question} [${default}] (yes/no): " value
+    value="${value,,}"
+    if [[ -z "${value}" ]]; then
+      value="${default}"
+    fi
+    case "${value}" in
+      y|yes|true|1)
+        value="true"
+        break
+        ;;
+      n|no|false|0)
+        value="false"
+        break
+        ;;
+      *)
+        msg_error "Invalid input for ${key}. Use yes or no."
+        ;;
+    esac
+  done
   printf -v "${key}" '%s' "${value}"
 }
 
-echo "Broadcast RTA Proxmox Bootstrap"
-echo "This script collects first-run answers and generates Proxmox config templates."
+ask_choice() {
+  local key="$1"
+  local question="$2"
+  local default="$3"
+  shift 3
+  local allowed=("$@")
+  local value
 
-prompt PVE_HOST "Proxmox host or IP" "192.168.1.57"
-prompt PVE_PORT "Proxmox API/UI port" "8006"
-prompt PVE_NODE "Proxmox node name" "pve"
+  while true; do
+    read -r -p "${question} [${default}]: " value
+    value="${value,,}"
+    if [[ -z "${value}" ]]; then
+      value="${default}"
+    fi
+    for candidate in "${allowed[@]}"; do
+      if [[ "${value}" == "${candidate}" ]]; then
+        printf -v "${key}" '%s' "${value}"
+        return 0
+      fi
+    done
+    msg_error "Invalid option. Allowed: ${allowed[*]}"
+  done
+}
 
-prompt TEMPLATE_CHOICE "Template choice (ubuntu-24.04 | ubuntu-22.04 | debian-12)" "ubuntu-24.04"
+header_info
+
+section "Proxmox Core"
+ask_input PVE_HOST "Proxmox host or IP" "192.168.1.57"
+ask_input PVE_PORT "Proxmox API/UI port" "8006"
+ask_input PVE_NODE "Proxmox node name" "pve"
+
+section "Container Template"
+ask_choice TEMPLATE_CHOICE "Template choice (ubuntu-24.04 | ubuntu-22.04 | debian-12)" "ubuntu-24.04" "ubuntu-24.04" "ubuntu-22.04" "debian-12"
 case "${TEMPLATE_CHOICE}" in
   ubuntu-24.04) TEMPLATE_PATH="local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst" ;;
   ubuntu-22.04) TEMPLATE_PATH="local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst" ;;
@@ -56,55 +136,75 @@ case "${TEMPLATE_CHOICE}" in
     ;;
 esac
 
-prompt STORAGE_AUDIO "Storage pool for audio-engine" "local-lvm"
-prompt STORAGE_CONTROL "Storage pool for control-plane" "local-lvm"
-prompt STORAGE_RECORDING "Storage pool for recording" "local-lvm"
+section "Storage"
+ask_input STORAGE_AUDIO "Storage pool for audio-engine" "local-lvm"
+ask_input STORAGE_CONTROL "Storage pool for control-plane" "local-lvm"
+ask_input STORAGE_RECORDING "Storage pool for recording" "local-lvm"
 
-prompt NETWORK_MODE "Network mode (single-bridge-vlan-tags | separate-bridges)" "single-bridge-vlan-tags"
+section "Network"
+ask_choice NETWORK_MODE "Network mode (single-bridge-vlan-tags | separate-bridges)" "single-bridge-vlan-tags" "single-bridge-vlan-tags" "separate-bridges"
 
 if [[ "${NETWORK_MODE}" == "single-bridge-vlan-tags" ]]; then
-  prompt BRIDGE_MAIN "Main bridge name" "vmbr0"
-  prompt VLAN_AUDIO "VLAN ID for audio traffic" "10"
-  prompt VLAN_MGMT "VLAN ID for management" "20"
-  prompt VLAN_INTERNET "VLAN ID for internet/update traffic" "30"
+  ask_input BRIDGE_MAIN "Main bridge name" "vmbr0"
+  ask_input VLAN_AUDIO "VLAN ID for audio traffic" "10"
+  ask_input VLAN_MGMT "VLAN ID for management" "20"
+  ask_input VLAN_INTERNET "VLAN ID for internet/update traffic" "30"
   BRIDGE_AUDIO="${BRIDGE_MAIN}"
   BRIDGE_MGMT="${BRIDGE_MAIN}"
   BRIDGE_INTERNET="${BRIDGE_MAIN}"
 else
-  prompt BRIDGE_AUDIO "Bridge for audio network" "vmbr10"
-  prompt BRIDGE_MGMT "Bridge for management network" "vmbr20"
-  prompt BRIDGE_INTERNET "Bridge for internet/update network" "vmbr30"
+  ask_input BRIDGE_AUDIO "Bridge for audio network" "vmbr10"
+  ask_input BRIDGE_MGMT "Bridge for management network" "vmbr20"
+  ask_input BRIDGE_INTERNET "Bridge for internet/update network" "vmbr30"
   VLAN_AUDIO="0"
   VLAN_MGMT="0"
   VLAN_INTERNET="0"
   BRIDGE_MAIN=""
 fi
 
-prompt VMID_AUDIO "VMID for audio-engine LXC" "200"
-prompt VMID_CONTROL "VMID for control-plane LXC" "201"
-prompt VMID_RECORDING "VMID for recording VM" "202"
+section "VM and LXC IDs"
+ask_input VMID_AUDIO "VMID for audio-engine LXC" "200"
+ask_input VMID_CONTROL "VMID for control-plane LXC" "201"
+ask_input VMID_RECORDING "VMID for recording VM" "202"
 
-prompt AUDIO_CORES "audio-engine cores" "4"
-prompt AUDIO_MEM "audio-engine memory MB" "4096"
-prompt AUDIO_ROOTFS "audio-engine rootfs GB" "8"
+section "Resource Sizing"
+ask_input AUDIO_CORES "audio-engine cores" "4"
+ask_input AUDIO_MEM "audio-engine memory MB" "4096"
+ask_input AUDIO_ROOTFS "audio-engine rootfs GB" "8"
 
-prompt CONTROL_CORES "control-plane cores" "2"
-prompt CONTROL_MEM "control-plane memory MB" "2048"
-prompt CONTROL_ROOTFS "control-plane rootfs GB" "8"
+ask_input CONTROL_CORES "control-plane cores" "2"
+ask_input CONTROL_MEM "control-plane memory MB" "2048"
+ask_input CONTROL_ROOTFS "control-plane rootfs GB" "8"
 
-prompt REC_CORES "recording VM cores" "6"
-prompt REC_MEM "recording VM memory MB" "8192"
+ask_input REC_CORES "recording VM cores" "6"
+ask_input REC_MEM "recording VM memory MB" "8192"
 
-prompt RECORDING_DISK_MODE "recording disk mode (virtual-disk | nvme-passthrough)" "virtual-disk"
-prompt RECORDING_PASSTHROUGH "recording passthrough ref (hostpci0/scsi ref, optional)" ""
+section "Recording and Audio"
+ask_choice RECORDING_DISK_MODE "recording disk mode (virtual-disk | nvme-passthrough)" "virtual-disk" "virtual-disk" "nvme-passthrough"
+ask_input RECORDING_PASSTHROUGH "recording passthrough ref (hostpci0/scsi ref, optional)" ""
 
-prompt AUDIO_DEVICE_TYPE "Audio source type" "WING"
-prompt AUDIO_VENDOR_PRODUCT "USB vendor:product (optional now, fill when known)" ""
-prompt_bool AUDIO_UDEV "Generate ALSA udev rule file" "yes"
+ask_input AUDIO_DEVICE_TYPE "Audio source type" "WING"
+ask_input AUDIO_VENDOR_PRODUCT "USB vendor:product (optional now, fill when known)" ""
+ask_bool AUDIO_UDEV "Generate ALSA udev rule file" "yes"
 
-prompt FIREWALL_PROFILE "Firewall profile (strict | default | open)" "default"
-prompt STARTUP_ORDER "Startup order" "control-plane,audio-engine,recording"
-prompt_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "yes"
+section "Bootstrap Behavior"
+ask_choice FIREWALL_PROFILE "Firewall profile (strict | default | open)" "default" "strict" "default" "open"
+ask_input STARTUP_ORDER "Startup order" "control-plane,audio-engine,recording"
+ask_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "yes"
+
+echo
+echo -e "${BL}Configuration Summary${CL}"
+echo "- Proxmox: ${PVE_HOST}:${PVE_PORT} (node ${PVE_NODE})"
+echo "- Template: ${TEMPLATE_CHOICE} -> ${TEMPLATE_PATH}"
+echo "- Network mode: ${NETWORK_MODE}"
+echo "- IDs: audio=${VMID_AUDIO}, control=${VMID_CONTROL}, recording=${VMID_RECORDING}"
+echo "- Output directory: ${OUTPUT_DIR}"
+
+ask_bool PROCEED "Generate artifacts now" "yes"
+if [[ "${PROCEED}" != "true" ]]; then
+  msg_warn "Cancelled by user before writing artifacts."
+  exit 0
+fi
 
 CONFIG_JSON="${OUTPUT_DIR}/bootstrap-config.json"
 cat > "${CONFIG_JSON}" <<EOF
