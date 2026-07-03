@@ -117,6 +117,102 @@ ask_choice() {
   done
 }
 
+ensure_command() {
+  local cmd="$1"
+  if ! command -v "${cmd}" >/dev/null 2>&1; then
+    msg_error "Required command not found: ${cmd}"
+    exit 1
+  fi
+}
+
+assert_unused_ids() {
+  local id="$1"
+  local label="$2"
+
+  if pct config "${id}" >/dev/null 2>&1; then
+    msg_error "${label} VMID ${id} already exists as an LXC container."
+    exit 1
+  fi
+
+  if qm config "${id}" >/dev/null 2>&1; then
+    msg_error "${label} VMID ${id} already exists as a VM."
+    exit 1
+  fi
+}
+
+apply_generated_resources() {
+  section "Applying Generated Resources"
+
+  ensure_command pct
+  ensure_command qm
+
+  assert_unused_ids "${VMID_AUDIO}" "Audio Engine"
+  assert_unused_ids "${VMID_CONTROL}" "Control Plane"
+  assert_unused_ids "${VMID_RECORDING}" "Recording"
+
+  msg_ok "Creating audio-engine LXC (${VMID_AUDIO})"
+  pct create "${VMID_AUDIO}" "${TEMPLATE_PATH}" \
+    --hostname audio-engine \
+    --storage "${STORAGE_AUDIO}" \
+    --rootfs "${STORAGE_AUDIO}:${AUDIO_ROOTFS}" \
+    --memory "${AUDIO_MEM}" \
+    --cores "${AUDIO_CORES}" \
+    --swap 0 \
+    --net0 "${AUDIO_NET_SPEC}" \
+    --unprivileged 0 \
+    --features nesting=1 \
+    --onboot 1 \
+    --startup order=2,up=10
+
+  cat >> "/etc/pve/lxc/${VMID_AUDIO}.conf" <<EOF
+lxc.cgroup2.devices.allow: c 116:* rwm
+lxc.mount.entry: /dev/snd dev/snd none bind,optional,create=dir
+EOF
+
+  msg_ok "Creating control-plane LXC (${VMID_CONTROL})"
+  pct create "${VMID_CONTROL}" "${TEMPLATE_PATH}" \
+    --hostname control-plane \
+    --storage "${STORAGE_CONTROL}" \
+    --rootfs "${STORAGE_CONTROL}:${CONTROL_ROOTFS}" \
+    --memory "${CONTROL_MEM}" \
+    --cores "${CONTROL_CORES}" \
+    --swap 0 \
+    --net0 "${CONTROL_NET0_SPEC}" \
+    --net1 "${CONTROL_NET1_SPEC}" \
+    --unprivileged 1 \
+    --onboot 1 \
+    --startup order=1,up=5
+
+  msg_ok "Creating recording VM (${VMID_RECORDING})"
+  qm create "${VMID_RECORDING}" \
+    --name recording \
+    --memory "${REC_MEM}" \
+    --cores "${REC_CORES}" \
+    --scsihw virtio-scsi-pci \
+    --net0 "${RECORDING_NET0_SPEC}" \
+    --net1 "${RECORDING_NET1_SPEC}" \
+    --onboot 1 \
+    --startup order=3,up=20
+
+  if [[ "${RECORDING_DISK_MODE}" == "virtual-disk" ]]; then
+    qm set "${VMID_RECORDING}" --scsi0 "${STORAGE_RECORDING}:64"
+    msg_ok "Attached default recording disk: ${STORAGE_RECORDING}:64"
+  elif [[ -n "${RECORDING_PASSTHROUGH}" ]]; then
+    local passthrough_key="${RECORDING_PASSTHROUGH%%:*}"
+    local passthrough_val="${RECORDING_PASSTHROUGH#*:}"
+    qm set "${VMID_RECORDING}" "--${passthrough_key}" "${passthrough_val}"
+    msg_ok "Applied passthrough option: --${passthrough_key} ${passthrough_val}"
+  else
+    msg_warn "Recording VM created without storage passthrough option."
+  fi
+
+  if [[ "${AUDIO_UDEV}" == "true" && -f "${OUTPUT_DIR}/99-wing.rules" ]]; then
+    msg_warn "Udev rule file generated at ${OUTPUT_DIR}/99-wing.rules - copy it into the audio-engine LXC once USB IDs are finalized."
+  fi
+
+  msg_ok "Resource creation complete."
+}
+
 header_info
 
 # This helper is intended to run directly on the Proxmox host.
@@ -192,6 +288,7 @@ section "Bootstrap Behavior"
 ask_choice FIREWALL_PROFILE "Firewall profile (strict | default | open)" "default" "strict" "default" "open"
 ask_input STARTUP_ORDER "Startup order" "control-plane,audio-engine,recording"
 ask_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "yes"
+ask_bool APPLY_NOW "Create the LXC/VM resources now on this Proxmox host" "yes"
 
 echo
 echo -e "${BL}Configuration Summary${CL}"
@@ -278,12 +375,22 @@ if [[ "${NETWORK_MODE}" == "single-bridge-vlan-tags" ]]; then
   CONTROL_NET1_LINE="net1: name=eth1,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},ip=dhcp,firewall=1"
   RECORDING_NET0_LINE="net0: virtio,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},firewall=1"
   RECORDING_NET1_LINE="net1: virtio,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},firewall=1"
+  AUDIO_NET_SPEC="name=eth0,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},ip=dhcp,firewall=1"
+  CONTROL_NET0_SPEC="name=eth0,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},ip=dhcp,firewall=1"
+  CONTROL_NET1_SPEC="name=eth1,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},ip=dhcp,firewall=1"
+  RECORDING_NET0_SPEC="virtio,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},firewall=1"
+  RECORDING_NET1_SPEC="virtio,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},firewall=1"
 else
   AUDIO_NET_LINE="net0: name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET0_LINE="net0: name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET1_LINE="net1: name=eth1,bridge=${BRIDGE_MGMT},ip=dhcp,firewall=1"
   RECORDING_NET0_LINE="net0: virtio,bridge=${BRIDGE_AUDIO},firewall=1"
   RECORDING_NET1_LINE="net1: virtio,bridge=${BRIDGE_MGMT},firewall=1"
+  AUDIO_NET_SPEC="name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
+  CONTROL_NET0_SPEC="name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
+  CONTROL_NET1_SPEC="name=eth1,bridge=${BRIDGE_MGMT},ip=dhcp,firewall=1"
+  RECORDING_NET0_SPEC="virtio,bridge=${BRIDGE_AUDIO},firewall=1"
+  RECORDING_NET1_SPEC="virtio,bridge=${BRIDGE_MGMT},firewall=1"
 fi
 
 cat > "${OUTPUT_DIR}/audio-engine-lxc.conf" <<EOF
@@ -358,4 +465,10 @@ echo "- control-plane-lxc.conf"
 echo "- recording-vm.conf"
 if [[ "${AUDIO_UDEV}" == "true" ]]; then
   echo "- 99-wing.rules"
+fi
+
+if [[ "${APPLY_NOW}" == "true" ]]; then
+  apply_generated_resources
+else
+  msg_warn "Generation finished. APPLY_NOW=no, so no LXC/VM resources were created."
 fi
