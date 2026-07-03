@@ -48,6 +48,80 @@ msg_error() {
   echo -e "${RD}[ERROR]${CL} $1"
 }
 
+list_usb_candidates() {
+  if ! command -v lsusb >/dev/null 2>&1; then
+    msg_warn "lsusb not found. Install usbutils to enable USB auto-detection."
+    return 1
+  fi
+
+  mapfile -t USB_LINES < <(lsusb 2>/dev/null || true)
+  if [[ ${#USB_LINES[@]} -eq 0 ]]; then
+    msg_warn "No USB devices detected by lsusb."
+    return 1
+  fi
+
+  USB_IDS=()
+  USB_LABELS=()
+
+  local line
+  local id
+  local label
+  for line in "${USB_LINES[@]}"; do
+    if [[ "${line}" =~ ID[[:space:]]([0-9a-fA-F]{4}:[0-9a-fA-F]{4})[[:space:]](.*)$ ]]; then
+      id="${BASH_REMATCH[1],,}"
+      label="${BASH_REMATCH[2]}"
+      USB_IDS+=("${id}")
+      USB_LABELS+=("${label}")
+    fi
+  done
+
+  if [[ ${#USB_IDS[@]} -eq 0 ]]; then
+    msg_warn "USB devices were listed, but no vendor:product IDs were parsed."
+    return 1
+  fi
+
+  return 0
+}
+
+pick_usb_vendor_product() {
+  local default_id="$1"
+  local chosen="${default_id}"
+
+  if ! list_usb_candidates; then
+    printf '%s' "${chosen}"
+    return 0
+  fi
+
+  echo
+  echo -e "${BL}Detected USB Devices${CL}"
+  local i
+  for i in "${!USB_IDS[@]}"; do
+    printf "%2d) %s  %s\n" "$((i + 1))" "${USB_IDS[i]}" "${USB_LABELS[i]}"
+  done
+  echo " 0) Enter manually / skip"
+
+  while true; do
+    local pick
+    read -r -p "Select USB device number for audio source [0]: " pick
+    if [[ -z "${pick}" ]]; then
+      pick="0"
+    fi
+    if [[ "${pick}" =~ ^[0-9]+$ ]]; then
+      if [[ "${pick}" == "0" ]]; then
+        printf '%s' "${chosen}"
+        return 0
+      fi
+      if (( pick >= 1 && pick <= ${#USB_IDS[@]} )); then
+        chosen="${USB_IDS[pick-1]}"
+        msg_ok "Selected USB ID ${chosen}"
+        printf '%s' "${chosen}"
+        return 0
+      fi
+    fi
+    msg_error "Invalid selection. Choose 0-${#USB_IDS[@]}."
+  done
+}
+
 ask_input() {
   local key="$1"
   local question="$2"
@@ -213,6 +287,24 @@ EOF
   msg_ok "Resource creation complete."
 }
 
+start_created_resources() {
+  section "Starting Created Resources"
+
+  ensure_command pct
+  ensure_command qm
+
+  msg_ok "Starting control-plane LXC (${VMID_CONTROL})"
+  pct start "${VMID_CONTROL}" >/dev/null 2>&1 || msg_warn "control-plane LXC (${VMID_CONTROL}) may already be running."
+
+  msg_ok "Starting audio-engine LXC (${VMID_AUDIO})"
+  pct start "${VMID_AUDIO}" >/dev/null 2>&1 || msg_warn "audio-engine LXC (${VMID_AUDIO}) may already be running."
+
+  msg_ok "Starting recording VM (${VMID_RECORDING})"
+  qm start "${VMID_RECORDING}" >/dev/null 2>&1 || msg_warn "recording VM (${VMID_RECORDING}) may already be running."
+
+  msg_ok "Startup sequence complete (control-plane -> audio-engine -> recording)."
+}
+
 header_info
 
 # This helper is intended to run directly on the Proxmox host.
@@ -281,7 +373,14 @@ ask_choice RECORDING_DISK_MODE "recording disk mode (virtual-disk | nvme-passthr
 ask_input RECORDING_PASSTHROUGH "recording passthrough ref (hostpci0/scsi ref, optional)" ""
 
 ask_input AUDIO_DEVICE_TYPE "Audio source type" "WING"
-ask_input AUDIO_VENDOR_PRODUCT "USB vendor:product (optional now, fill when known)" ""
+
+USB_ID_DEFAULT=""
+if [[ "${AUDIO_DEVICE_TYPE,,}" == "wing" || "${AUDIO_DEVICE_TYPE,,}" == *"behringer"* ]]; then
+  msg_ok "Scanning USB hardware to help prefill audio vendor:product ID..."
+  USB_ID_DEFAULT="$(pick_usb_vendor_product "")"
+fi
+
+ask_input AUDIO_VENDOR_PRODUCT "USB vendor:product (optional now, fill when known)" "${USB_ID_DEFAULT}"
 ask_bool AUDIO_UDEV "Generate ALSA udev rule file" "yes"
 
 section "Bootstrap Behavior"
@@ -289,6 +388,7 @@ ask_choice FIREWALL_PROFILE "Firewall profile (strict | default | open)" "defaul
 ask_input STARTUP_ORDER "Startup order" "control-plane,audio-engine,recording"
 ask_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "yes"
 ask_bool APPLY_NOW "Create the LXC/VM resources now on this Proxmox host" "yes"
+ask_bool START_NOW "Start resources immediately after creation" "yes"
 
 echo
 echo -e "${BL}Configuration Summary${CL}"
@@ -469,6 +569,11 @@ fi
 
 if [[ "${APPLY_NOW}" == "true" ]]; then
   apply_generated_resources
+  if [[ "${START_NOW}" == "true" ]]; then
+    start_created_resources
+  else
+    msg_warn "Resources created but not started (START_NOW=no)."
+  fi
 else
   msg_warn "Generation finished. APPLY_NOW=no, so no LXC/VM resources were created."
 fi
