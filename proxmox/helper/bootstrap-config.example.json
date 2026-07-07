@@ -1,0 +1,61 @@
+{
+  "proxmox": {
+    "host": "192.168.1.57",
+    "port": 8006,
+    "node": "pve"
+  },
+  "template": {
+    "choice": "ubuntu-24.04",
+    "path": "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
+  },
+  "storage": {
+    "audioEngine": "local-lvm",
+    "controlPlane": "local-lvm",
+    "recording": "local-lvm"
+  },
+  "network": {
+    "mode": "single-bridge-vlan-tags",
+    "bridge": "vmbr0",
+    "bridgeAudio": "vmbr0",
+    "bridgeMgmt": "vmbr0",
+    "bridgeInternet": "vmbr0",
+    "vlanAudio": 10,
+    "vlanMgmt": 20,
+    "vlanInternet": 30
+  },
+  "ids": {
+    "audioEngine": 200,
+    "controlPlane": 201,
+    "recording": 202
+  },
+  "resources": {
+    "audioEngine": {
+      "cores": 4,
+      "memoryMb": 4096,
+      "rootfsGb": 8
+    },
+    "controlPlane": {
+      "cores": 2,
+      "memoryMb": 2048,
+      "rootfsGb": 8
+    },
+    "recording": {
+      "cores": 6,
+      "memoryMb": 8192
+    }
+  },
+  "recording": {
+    "diskMode": "virtual-disk",
+    "passthroughRef": ""
+  },
+  "audio": {
+    "deviceType": "WING",
+    "vendorProduct": "",
+    "generateUdevRule": true
+  },
+  "bootstrap": {
+    "firewallProfile": "default",
+    "startupOrder": "control-plane,audio-engine,recording",
+    "installBuildTooling": true
+  }
+}

@@ -1,0 +1,20 @@
+services:
+  control-plane:
+    image: node:20
+    working_dir: /app
+    command: ["node", "server.js"]
+    volumes:
+      - ./control-plane:/app
+    ports:
+      - "8080:8080"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  event-bus:
+    image: nats:2
+    ports:
+      - "4222:4222"
+
