@@ -394,17 +394,13 @@ if [[ "${NETWORK_MODE}" == "single-bridge-vlan-tags" ]]; then
   ask_input BRIDGE_MAIN "Main bridge name" "vmbr0"
   ask_input VLAN_AUDIO "VLAN ID for audio traffic" "10"
   ask_input VLAN_MGMT "VLAN ID for management" "20"
-  ask_input VLAN_INTERNET "VLAN ID for internet/update traffic" "30"
   BRIDGE_AUDIO="${BRIDGE_MAIN}"
   BRIDGE_MGMT="${BRIDGE_MAIN}"
-  BRIDGE_INTERNET="${BRIDGE_MAIN}"
 else
   ask_input BRIDGE_AUDIO "Bridge for audio network" "vmbr10"
   ask_input BRIDGE_MGMT "Bridge for management network" "vmbr20"
-  ask_input BRIDGE_INTERNET "Bridge for internet/update network" "vmbr30"
   VLAN_AUDIO="0"
   VLAN_MGMT="0"
-  VLAN_INTERNET="0"
   BRIDGE_MAIN=""
 fi
 
@@ -486,10 +482,8 @@ cat > "${CONFIG_JSON}" <<EOF
     "bridge": "${BRIDGE_MAIN}",
     "bridgeAudio": "${BRIDGE_AUDIO}",
     "bridgeMgmt": "${BRIDGE_MGMT}",
-    "bridgeInternet": "${BRIDGE_INTERNET}",
     "vlanAudio": ${VLAN_AUDIO},
-    "vlanMgmt": ${VLAN_MGMT},
-    "vlanInternet": ${VLAN_INTERNET}
+    "vlanMgmt": ${VLAN_MGMT}
   },
   "ids": {
     "audioEngine": ${VMID_AUDIO},
