@@ -396,7 +396,7 @@ run_repo_sync_in_lxc() {
       if [[ ! -f "${MANIFEST_PATH}" ]]; then
         return 1
       fi
-      awk -F '\t' -v wanted="${key}" '$1==wanted {print $2}' "${MANIFEST_PATH}" | tail -n 1
+      grep -E "^${key}\|" "${MANIFEST_PATH}" | tail -n 1 | cut -d "|" -f 2-
     }
 
     set_manifest_path() {
@@ -405,11 +405,11 @@ run_repo_sync_in_lxc() {
       local tmp_path
       tmp_path="${MANIFEST_PATH}.tmp"
       if [[ -f "${MANIFEST_PATH}" ]]; then
-        awk -F '\t' -v wanted="${key}" '$1!=wanted {print $1"\t"$2}' "${MANIFEST_PATH}" > "${tmp_path}" || true
+        grep -E -v "^${key}\|" "${MANIFEST_PATH}" > "${tmp_path}" || true
       else
         : > "${tmp_path}"
       fi
-      echo "${key}\t${rel_path}" >> "${tmp_path}"
+      echo "${key}|${rel_path}" >> "${tmp_path}"
       mv "${tmp_path}" "${MANIFEST_PATH}"
     }
 
