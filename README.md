@@ -152,6 +152,20 @@ env \
 At the end of the test window, the process exits and prints a `Source Activity Summary` block with per-channel status (`ACTIVE` or `SILENT`), non-zero percentage, and peak sample value.
 It also prints a `Packet Integrity Summary` block that reports per-stream packet counts, sequence gaps, duplicate sequences, and timestamp regressions.
 
+For Milestone 2 acceptance at the current 30-minute target, use:
+
+```bash
+cd audio-engine
+bash scripts/run_milestone2_acceptance.sh
+```
+
+Override duration if needed:
+
+```bash
+cd audio-engine
+bash scripts/run_milestone2_acceptance.sh --duration-secs 600
+```
+
 If ALSA headers are missing, install:
 
 ```bash

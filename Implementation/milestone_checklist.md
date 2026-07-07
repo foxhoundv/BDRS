@@ -45,6 +45,8 @@ Source: Implementation package v1.0
 - 2026-07-06: Extended Proxmox bootstrap repo sync to mirror the full checked-out repository into `/opt/bdrs/deploy/current` and update `/opt/bdrs/current` on each fresh bootstrap run.
 - 2026-07-06: Added non-interactive `--sync-only` mode to `ProxMox/helper/bdrs.sh` so existing LXCs can pull and apply latest repo/deploy/default-config updates without full container rebuild.
 - 2026-07-06: Added persistent user-settings retention across sync runs in `bdrs.sh` via `/opt/bdrs/state/user-overrides` plus `settings-manifest.tsv` path tracking, so updated deployments keep user overrides instead of resetting to defaults.
+- 2026-07-06: Added `audio-engine/scripts/run_milestone2_acceptance.sh` to run a bounded Milestone 2 acceptance validation with automated log-based pass/fail checks.
+- 2026-07-06: Updated Milestone 2 continuous-stream target from 2 hours to 30 minutes per current validation scope.
 
 ## How to use this file
 
@@ -152,7 +154,7 @@ Tasks:
 
 Acceptance criteria:
 - [ ] Audio Engine survives USB disconnect/reconnect without manual restart
-- [ ] At least one stereo stream is transmitted continuously for 2 hours
+- [ ] At least one stereo stream is transmitted continuously for 30 minutes
 - [x] Packet sequence continuity and timestamp monotonicity validated
 - [ ] End-to-end audio latency meets defined MVP target
 

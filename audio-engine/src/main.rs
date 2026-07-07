@@ -678,17 +678,19 @@ fn run_alsa_capture_session(
 ) -> anyhow::Result<()> {
 
     let pcm = PCM::new(device, Direction::Capture, false)?;
-    let hwp = HwParams::any(&pcm)?;
-    hwp.set_channels(CAPTURE_CHANNELS)?;
-    hwp.set_rate(capture_rate_hz, ValueOr::Nearest)?;
-    match sample_format {
-        SampleFormat::S16Le => hwp.set_format(Format::s16())?,
-        // Capture 24-bit sources in a 32-bit signed container for better headroom.
-        SampleFormat::S24In32Le => hwp.set_format(Format::s32())?,
+    {
+        let hwp = HwParams::any(&pcm)?;
+        hwp.set_channels(CAPTURE_CHANNELS)?;
+        hwp.set_rate(capture_rate_hz, ValueOr::Nearest)?;
+        match sample_format {
+            SampleFormat::S16Le => hwp.set_format(Format::s16())?,
+            // Capture 24-bit sources in a 32-bit signed container for better headroom.
+            SampleFormat::S24In32Le => hwp.set_format(Format::s32())?,
+        }
+        hwp.set_access(Access::RWInterleaved)?;
+        hwp.set_period_size(frame_samples as i64, ValueOr::Nearest)?;
+        pcm.hw_params(&hwp)?;
     }
-    hwp.set_access(Access::RWInterleaved)?;
-    hwp.set_period_size(frame_samples as i64, ValueOr::Nearest)?;
-    pcm.hw_params(&hwp)?;
     pcm.prepare()?;
 
     match sample_format {
