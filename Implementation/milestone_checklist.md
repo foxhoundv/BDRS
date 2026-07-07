@@ -37,7 +37,7 @@ Source: Implementation package v1.0
 - 2026-07-06: Added bounded source-visibility test mode in `audio-engine/src/main.rs` via `AUDIO_ENGINE_TEST_DURATION_SECS` and `AUDIO_ENGINE_TEST_CHANNEL_COUNT`, with end-of-test per-channel activity summary output.
 - 2026-07-06: Completed 5-minute live visibility test in LXC 200 (`44100` Hz, `16` sources). Summary written to `/tmp/audio_engine_5min_16src.log`; highest-energy channels observed: 1, 2, 3, 6, 7, 10, 13.
 - 2026-07-06: Added configurable capture sample format in audio-engine (`s16_le` and `s24_in_32_le`) with WING-friendly default, and added control-plane settings API (`GET/PUT /settings/audio-input`, reset endpoint) to fetch/update mixer parameters post-setup.
-- 2026-07-06: Added repo-driven startup defaults to Proxmox bootstrap (`bdrs.sh`) with configurable `repoUrl` + `repoRef` (default `v0.2.4`) and automatic seeding of audio-engine/control-plane default settings from the checked out Git release.
+- 2026-07-06: Added repo-driven startup defaults to Proxmox bootstrap (`bdrs.sh`) with configurable `repoUrl` + `repoRef` (default `v0.2.9`) and automatic seeding of audio-engine/control-plane default settings from the checked out Git release.
 - 2026-07-06: Completed WING persistent mapping baseline: added udev rule template at `ProxMox/99-wing.rules` using verified USB ID `1397:050b`, and updated ALSA card auto-discovery to prefer `WING`/`Behringer` labels when present.
 - 2026-07-06: Implemented ALSA hotplug auto-rebind flow in `audio-engine/src/main.rs`; capture now continuously retries and re-discovers ALSA devices after open/read failures instead of exiting capture thread.
 - 2026-07-06: Implemented optional Opus encoder stage in `audio-engine/src/main.rs` with 20 ms framing support via `AUDIO_ENGINE_PAYLOAD_CODEC=opus`, enforced at 48 kHz and validated with runtime tests.
@@ -47,7 +47,8 @@ Source: Implementation package v1.0
 - 2026-07-06: Added persistent user-settings retention across sync runs in `bdrs.sh` via `/opt/bdrs/state/user-overrides` plus `settings-manifest.tsv` path tracking, so updated deployments keep user overrides instead of resetting to defaults.
 - 2026-07-06: Added `audio-engine/scripts/run_milestone2_acceptance.sh` to run a bounded Milestone 2 acceptance validation with automated log-based pass/fail checks.
 - 2026-07-06: Updated Milestone 2 continuous-stream target from 2 hours to 30 minutes per current validation scope.
-- 2026-07-06: Bumped project versioning baseline and bootstrap default repo ref to `v0.2.4`.
+- 2026-07-06: Bumped project versioning baseline and bootstrap default repo ref to `v0.2.9`.
+- 2026-07-07: Validated live WING disconnect/reconnect auto-rebind behavior in LXC 200. During unplug, ALSA read/open errors and frame warnings were observed as expected; after reconnect, `capture_frames`, `packets_enqueued`, and `packets_sent` resumed increasing without process restart and `dropped_queue_full` remained `0`.
 
 ## How to use this file
 
@@ -133,7 +134,6 @@ Tasks:
 Acceptance criteria:
 - [x] All 3 nodes auto-start in correct order after host reboot
 - [x] VLAN segmentation verified by connectivity tests
-- [ ] Latency/jitter on VLAN 10 is within target budget
 
 ---
 
@@ -142,7 +142,6 @@ Acceptance criteria:
 Goal: Produce first reliable broadcast stream from WING input.
 
 Tasks:
-- [ ] Implement ALSA device discovery + persistent mapping for WING
 - [x] Implement ALSA device discovery + persistent mapping for WING
 - [x] Add hotplug detection and auto-rebind flow
 - [x] Build capture pipeline for 48-channel PCM input
@@ -154,10 +153,8 @@ Tasks:
 - [x] Add runtime config loading (YAML/JSON/env)
 
 Acceptance criteria:
-- [ ] Audio Engine survives USB disconnect/reconnect without manual restart
-- [ ] At least one stereo stream is transmitted continuously for 30 minutes
+- [x] Audio Engine survives USB disconnect/reconnect without manual restart
 - [x] Packet sequence continuity and timestamp monotonicity validated
-- [ ] End-to-end audio latency meets defined MVP target
 
 ---
 
@@ -179,6 +176,16 @@ Acceptance criteria:
 - [ ] Stream lifecycle events are published and observable
 - [ ] Auth protects write endpoints and admin operations
 - [ ] API + WS handles reconnects without losing control state
+
+Carry-over from Milestone 1 & 2 (incomplete):
+
+Tasks:
+- [ ] Implement ALSA device discovery + persistent mapping for WING
+
+Acceptance criteria:
+- [ ] Latency/jitter on VLAN 10 is within target budget
+- [ ] At least one stereo stream is transmitted continuously for 30 minutes
+- [ ] End-to-end audio latency meets defined MVP target
 
 ---
 

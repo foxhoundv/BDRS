@@ -150,7 +150,7 @@
         },
         "repoRef": {
           "type": "string",
-          "default": "v0.2.4"
+          "default": "v0.2.9"
         },
         "syncDefaultsFromRepo": {
           "type": "boolean",

@@ -532,7 +532,7 @@ Usage:
 
 Options:
   --repo-url <url>          Git repository URL (default: https://github.com/foxhoundv/BDRS.git)
-  --repo-ref <ref>          Branch or tag to sync (default: v0.2.4)
+  --repo-ref <ref>          Branch or tag to sync (default: v0.2.9)
   --audio-vmid <id>         Audio Engine LXC VMID (default: 200)
   --control-vmid <id>       Control Plane LXC VMID (default: 201)
   --recording-vmid <id>     Recording LXC VMID (default: 202)
@@ -592,7 +592,7 @@ prompt_for_repo_ref_update_if_available() {
 
 run_sync_only_mode() {
   BOOTSTRAP_REPO_URL="https://github.com/foxhoundv/BDRS.git"
-  BOOTSTRAP_REPO_REF="v0.2.4"
+  BOOTSTRAP_REPO_REF="v0.2.9"
   VMID_AUDIO="200"
   VMID_CONTROL="201"
   VMID_RECORDING="202"
@@ -733,7 +733,7 @@ section "Bootstrap Behavior"
 ask_choice FIREWALL_PROFILE "Firewall profile (strict | default | open)" "default" "strict" "default" "open"
 ask_input STARTUP_ORDER "Startup order" "control-plane,audio-engine,recording"
 ask_input BOOTSTRAP_REPO_URL "Git repo URL for machine defaults" "https://github.com/foxhoundv/BDRS.git"
-ask_input BOOTSTRAP_REPO_REF "Git branch/tag for startup defaults" "v0.2.4"
+ask_input BOOTSTRAP_REPO_REF "Git branch/tag for startup defaults" "v0.2.9"
 ask_secret_confirm LXC_ROOT_PASSWORD "LXC root password"
 ask_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "yes"
 ask_bool APPLY_NOW "Create the LXC resources now on this Proxmox host" "yes"
