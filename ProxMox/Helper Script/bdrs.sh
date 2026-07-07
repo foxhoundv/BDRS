@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/generated"
 mkdir -p "${OUTPUT_DIR}"
 
@@ -648,12 +649,15 @@ run_sync_only_mode() {
   done
 
   section "Repository Sync Only Mode"
-  ensure_command git
   msg_ok "Repo URL: ${BOOTSTRAP_REPO_URL}"
   msg_ok "Repo ref: ${BOOTSTRAP_REPO_REF}"
   msg_ok "VMIDs: control=${VMID_CONTROL}, audio=${VMID_AUDIO}, recording=${VMID_RECORDING}"
 
-  prompt_for_repo_ref_update_if_available
+  if command -v git >/dev/null 2>&1; then
+    prompt_for_repo_ref_update_if_available
+  else
+    msg_warn "git not found on host; skipping upstream release-tag check and keeping ref ${BOOTSTRAP_REPO_REF}."
+  fi
   msg_ok "Final repo ref: ${BOOTSTRAP_REPO_REF}"
 
   ensure_command pct
