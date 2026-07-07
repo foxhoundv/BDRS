@@ -2,7 +2,7 @@
 
 Broadcast Distribution RTA System
 
-Current baseline release: `v0.2.0`
+Current baseline release: `v0.2.4`
 
 This repository contains the early implementation baseline for a modular audio distribution system:
 
@@ -186,7 +186,7 @@ sudo apt-get install -y libasound2-dev
 During the wizard, set:
 
 - `repoUrl` (default: `https://github.com/foxhoundv/BDRS.git`)
-- `repoRef` (default: `v0.2.0`)
+- `repoRef` (default: `v0.2.4`)
 - `syncDefaultsFromRepo` (default: `true`)
 
 When enabled, each started LXC clones/pulls the configured repo ref into `/opt/bdrs/repo`, and seeds default settings files if missing:
@@ -210,7 +210,7 @@ Optional overrides:
 ```bash
 ./ProxMox/helper/bdrs.sh --sync-only \
 	--repo-url https://github.com/foxhoundv/BDRS.git \
-	--repo-ref v0.2.0 \
+	--repo-ref v0.2.4 \
 	--control-vmid 201 \
 	--audio-vmid 200 \
 	--recording-vmid 202
@@ -237,7 +237,7 @@ Persistent WING USB mapping reference rule is available at `ProxMox/99-wing.rule
 
 - Branch naming: `feature/<scope>`, `fix/<scope>`, `ops/<scope>`
 - Milestone stabilization branch example: `release/m2-mvp`
-- Current release tag: `v0.2.0`
+- Current release tag: `v0.2.4`
 - Historical examples: `v0.1.0-m0`, `v0.2.0-m1`
 
 ## Next priorities

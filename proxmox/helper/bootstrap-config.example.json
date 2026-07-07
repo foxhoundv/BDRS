@@ -57,7 +57,7 @@
     "firewallProfile": "default",
     "startupOrder": "control-plane,audio-engine,recording",
     "repoUrl": "https://github.com/foxhoundv/BDRS.git",
-    "repoRef": "v0.2.0",
+    "repoRef": "v0.2.4",
     "syncDefaultsFromRepo": true,
     "installBuildTooling": true
   }

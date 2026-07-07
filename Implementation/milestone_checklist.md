@@ -37,7 +37,7 @@ Source: Implementation package v1.0
 - 2026-07-06: Added bounded source-visibility test mode in `audio-engine/src/main.rs` via `AUDIO_ENGINE_TEST_DURATION_SECS` and `AUDIO_ENGINE_TEST_CHANNEL_COUNT`, with end-of-test per-channel activity summary output.
 - 2026-07-06: Completed 5-minute live visibility test in LXC 200 (`44100` Hz, `16` sources). Summary written to `/tmp/audio_engine_5min_16src.log`; highest-energy channels observed: 1, 2, 3, 6, 7, 10, 13.
 - 2026-07-06: Added configurable capture sample format in audio-engine (`s16_le` and `s24_in_32_le`) with WING-friendly default, and added control-plane settings API (`GET/PUT /settings/audio-input`, reset endpoint) to fetch/update mixer parameters post-setup.
-- 2026-07-06: Added repo-driven startup defaults to Proxmox bootstrap (`bdrs.sh`) with configurable `repoUrl` + `repoRef` (default `v0.2.0`) and automatic seeding of audio-engine/control-plane default settings from the checked out Git release.
+- 2026-07-06: Added repo-driven startup defaults to Proxmox bootstrap (`bdrs.sh`) with configurable `repoUrl` + `repoRef` (default `v0.2.4`) and automatic seeding of audio-engine/control-plane default settings from the checked out Git release.
 - 2026-07-06: Completed WING persistent mapping baseline: added udev rule template at `ProxMox/99-wing.rules` using verified USB ID `1397:050b`, and updated ALSA card auto-discovery to prefer `WING`/`Behringer` labels when present.
 - 2026-07-06: Implemented ALSA hotplug auto-rebind flow in `audio-engine/src/main.rs`; capture now continuously retries and re-discovers ALSA devices after open/read failures instead of exiting capture thread.
 - 2026-07-06: Implemented optional Opus encoder stage in `audio-engine/src/main.rs` with 20 ms framing support via `AUDIO_ENGINE_PAYLOAD_CODEC=opus`, enforced at 48 kHz and validated with runtime tests.
@@ -47,6 +47,7 @@ Source: Implementation package v1.0
 - 2026-07-06: Added persistent user-settings retention across sync runs in `bdrs.sh` via `/opt/bdrs/state/user-overrides` plus `settings-manifest.tsv` path tracking, so updated deployments keep user overrides instead of resetting to defaults.
 - 2026-07-06: Added `audio-engine/scripts/run_milestone2_acceptance.sh` to run a bounded Milestone 2 acceptance validation with automated log-based pass/fail checks.
 - 2026-07-06: Updated Milestone 2 continuous-stream target from 2 hours to 30 minutes per current validation scope.
+- 2026-07-06: Bumped project versioning baseline and bootstrap default repo ref to `v0.2.4`.
 
 ## How to use this file
 
