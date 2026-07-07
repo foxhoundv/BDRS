@@ -203,6 +203,7 @@ Optional overrides:
 ```
 
 `--sync-only` performs repository pull + deployment mirror + default-config seeding for the target LXCs, and skips interactive provisioning prompts.
+Before syncing, it checks the latest upstream `v*` release tag and prompts whether to keep the selected/current `--repo-ref` or move to the newer release.
 
 User setting overrides are preserved across sync runs:
 

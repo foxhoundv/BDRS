@@ -539,6 +539,56 @@ Options:
 EOF
 }
 
+detect_latest_release_tag() {
+  local repo_url="$1"
+  git ls-remote --tags --refs "${repo_url}" "v*" 2>/dev/null \
+    | awk -F/ '{print $3}' \
+    | sort -V \
+    | tail -n 1
+}
+
+prompt_for_repo_ref_update_if_available() {
+  local latest_tag
+  latest_tag="$(detect_latest_release_tag "${BOOTSTRAP_REPO_URL}")"
+
+  if [[ -z "${latest_tag}" ]]; then
+    msg_warn "Could not determine latest release tag from ${BOOTSTRAP_REPO_URL}; continuing with ${BOOTSTRAP_REPO_REF}."
+    return 0
+  fi
+
+  if [[ "${BOOTSTRAP_REPO_REF}" == "${latest_tag}" ]]; then
+    msg_ok "Repo ref already on latest release tag: ${BOOTSTRAP_REPO_REF}"
+    return 0
+  fi
+
+  local current_norm="${BOOTSTRAP_REPO_REF#v}"
+  local latest_norm="${latest_tag#v}"
+  if [[ "${BOOTSTRAP_REPO_REF}" =~ ^v[0-9]+(\.[0-9]+)*$ ]] && [[ "${latest_tag}" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
+    if [[ "$(printf '%s\n%s\n' "${latest_norm}" "${current_norm}" | sort -V | tail -n 1)" == "${current_norm}" ]]; then
+      msg_ok "Selected repo ref ${BOOTSTRAP_REPO_REF} is newer or equal to detected latest ${latest_tag}."
+      return 0
+    fi
+  fi
+
+  msg_warn "A newer release tag is available: ${latest_tag} (current: ${BOOTSTRAP_REPO_REF})"
+  local choice
+  read -r -p "Use latest release tag ${latest_tag}? [no] (yes/no): " choice
+  choice="${choice,,}"
+  if [[ -z "${choice}" ]]; then
+    choice="no"
+  fi
+
+  case "${choice}" in
+    y|yes|true|1)
+      BOOTSTRAP_REPO_REF="${latest_tag}"
+      msg_ok "Sync-only will use updated ref: ${BOOTSTRAP_REPO_REF}"
+      ;;
+    *)
+      msg_ok "Keeping selected ref: ${BOOTSTRAP_REPO_REF}"
+      ;;
+  esac
+}
+
 run_sync_only_mode() {
   BOOTSTRAP_REPO_URL="https://github.com/foxhoundv/BDRS.git"
   BOOTSTRAP_REPO_REF="v0.2.0"
@@ -581,9 +631,13 @@ run_sync_only_mode() {
   done
 
   section "Repository Sync Only Mode"
+  ensure_command git
   msg_ok "Repo URL: ${BOOTSTRAP_REPO_URL}"
   msg_ok "Repo ref: ${BOOTSTRAP_REPO_REF}"
   msg_ok "VMIDs: control=${VMID_CONTROL}, audio=${VMID_AUDIO}, recording=${VMID_RECORDING}"
+
+  prompt_for_repo_ref_update_if_available
+  msg_ok "Final repo ref: ${BOOTSTRAP_REPO_REF}"
 
   ensure_command pct
   run_post_create_repo_sync
