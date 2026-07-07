@@ -48,95 +48,6 @@ msg_error() {
   echo -e "${RD}[ERROR]${CL} $1"
 }
 
-list_recording_passthrough_candidates() {
-  RECORDING_REFS=()
-  RECORDING_LABELS=()
-  local found_count=0
-
-  # Try to find raw disks via /dev/disk/by-id
-  if [[ -d /dev/disk/by-id ]]; then
-    while IFS= read -r disk_path; do
-      [[ -z "${disk_path}" ]] && continue
-      local disk_basename
-      disk_basename=$(basename "${disk_path}")
-      RECORDING_REFS+=("scsi0:${disk_basename}")
-      RECORDING_LABELS+=("Raw disk /dev/disk/by-id/${disk_basename}")
-      ((found_count++))
-    done < <(find -L /dev/disk/by-id -maxdepth 1 -type l ! -name '*-part*' 2>/dev/null | sort)
-  fi
-
-  # Try to find PCI storage devices via lspci
-  if command -v lspci >/dev/null 2>&1; then
-    lspci 2>/dev/null | while IFS= read -r line; do
-      [[ -z "${line}" ]] && continue
-      if [[ "${line}" =~ ^([0-9a-fA-F:.]+)[[:space:]]+(.*)$ ]]; then
-        case "${BASH_REMATCH[2]}" in
-          *"SATA"*|*"RAID"*|*"NVMe"*|*"storage"*|*"mass"*)
-            RECORDING_REFS+=("hostpci0:${BASH_REMATCH[1]}")
-            RECORDING_LABELS+=("PCI ${BASH_REMATCH[1]}: ${BASH_REMATCH[2]}")
-            ((found_count++))
-            ;;
-        esac
-      fi
-    done
-  fi
-
-  # Also check for /dev/sd* and /dev/nvme* devices directly
-  for device in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
-    if [[ -b "${device}" ]] 2>/dev/null && ! grep -q "^${device}" /proc/mounts 2>/dev/null; then
-      local dev_name
-      dev_name=$(basename "${device}")
-      RECORDING_REFS+=("scsi0:${dev_name}")
-      RECORDING_LABELS+=("Physical device ${dev_name}")
-      ((found_count++))
-    fi
-  done
-
-  return 0
-}
-
-pick_recording_passthrough_ref() {
-  local default_ref="$1"
-  PICKED_RECORDING_REF="${default_ref}"
-
-  list_recording_passthrough_candidates
-
-  echo
-  if [[ ${#RECORDING_REFS[@]} -gt 0 ]]; then
-    echo -e "${BL}Detected Recording Passthrough Options:${CL}"
-    local i
-    for i in "${!RECORDING_REFS[@]}"; do
-      printf "  %d) %s\n" "$((i + 1))" "${RECORDING_LABELS[i]}"
-    done
-    echo "  0) Don't use passthrough (will need virtual disk on recording VM)"
-  else
-    echo -e "${YW}No storage devices auto-detected for passthrough.${CL}"
-    echo "  Ensure you're running this on a Proxmox host with attached storage."
-    echo "  0) Continue without passthrough"
-  fi
-
-  while true; do
-    local pick
-    read -r -p $'\nChoice [0]: ' pick
-    if [[ -z "${pick}" ]]; then
-      pick="0"
-    fi
-    if [[ "${pick}" =~ ^[0-9]+$ ]]; then
-      if [[ "${pick}" == "0" ]]; then
-        PICKED_RECORDING_REF=""
-        msg_ok "Recording will use virtual disk (passthrough disabled)"
-        return 0
-      fi
-      if (( pick >= 1 && pick <= ${#RECORDING_REFS[@]} )); then
-        PICKED_RECORDING_REF="${RECORDING_REFS[pick-1]}"
-        msg_ok "Selected passthrough: ${PICKED_RECORDING_REF}"
-        return 0
-      fi
-    fi
-    msg_error "Invalid selection. Choose 0-${#RECORDING_REFS[@]}."
-  done
-}
-
 list_usb_candidates() {
   if ! command -v lsusb >/dev/null 2>&1; then
     msg_warn "lsusb not found. Install usbutils to enable USB auto-detection."
@@ -387,30 +298,22 @@ EOF
     --onboot 1 \
     --startup order=1,up=5
 
-  msg_ok "Creating recording VM (${VMID_RECORDING})"
-  qm create "${VMID_RECORDING}" \
-    --name recording \
+  msg_ok "Creating recording LXC (${VMID_RECORDING})"
+  pct create "${VMID_RECORDING}" "${TEMPLATE_PATH}" \
+    --hostname recording \
+    --storage "${STORAGE_RECORDING}" \
+    --rootfs "${STORAGE_RECORDING}:${REC_ROOTFS}" \
     --memory "${REC_MEM}" \
     --cores "${REC_CORES}" \
-    --scsihw virtio-scsi-pci \
+    --password "${LXC_ROOT_PASSWORD}" \
+    --swap 0 \
     --net0 "${RECORDING_NET0_SPEC}" \
     --net1 "${RECORDING_NET1_SPEC}" \
+    --unprivileged 1 \
     --onboot 1 \
     --startup order=3,up=20
 
-  if [[ "${RECORDING_DISK_MODE}" == "virtual-disk" ]]; then
-    qm set "${VMID_RECORDING}" --scsi0 "${STORAGE_RECORDING}:64"
-    msg_ok "Attached default recording disk: ${STORAGE_RECORDING}:64"
-  elif [[ -n "${RECORDING_PASSTHROUGH}" ]]; then
-    local passthrough_key="${RECORDING_PASSTHROUGH%%:*}"
-    local passthrough_val="${RECORDING_PASSTHROUGH#*:}"
-    qm set "${VMID_RECORDING}" "--${passthrough_key}" "${passthrough_val}"
-    msg_ok "Applied passthrough option: --${passthrough_key} ${passthrough_val}"
-  else
-    msg_warn "Recording VM created without storage passthrough option."
-  fi
-
-  msg_warn "Recording VM guest credentials are not set by this script because no OS is installed in the VM yet."
+  msg_ok "Recording LXC rootfs attached: ${STORAGE_RECORDING}:${REC_ROOTFS}"
 
   if [[ "${AUDIO_UDEV}" == "true" && -f "${OUTPUT_DIR}/99-wing.rules" ]]; then
     msg_warn "Udev rule file generated at ${OUTPUT_DIR}/99-wing.rules - copy it into the audio-engine LXC once USB IDs are finalized."
@@ -431,8 +334,8 @@ start_created_resources() {
   msg_ok "Starting audio-engine LXC (${VMID_AUDIO})"
   pct start "${VMID_AUDIO}" >/dev/null 2>&1 || msg_warn "audio-engine LXC (${VMID_AUDIO}) may already be running."
 
-  msg_ok "Starting recording VM (${VMID_RECORDING})"
-  qm start "${VMID_RECORDING}" >/dev/null 2>&1 || msg_warn "recording VM (${VMID_RECORDING}) may already be running."
+  msg_ok "Starting recording LXC (${VMID_RECORDING})"
+  pct start "${VMID_RECORDING}" >/dev/null 2>&1 || msg_warn "recording LXC (${VMID_RECORDING}) may already be running."
 
   msg_ok "Startup sequence complete (control-plane -> audio-engine -> recording)."
 }
@@ -486,7 +389,7 @@ fi
 section "VM and LXC IDs"
 ask_input VMID_AUDIO "VMID for audio-engine LXC" "200"
 ask_input VMID_CONTROL "VMID for control-plane LXC" "201"
-ask_input VMID_RECORDING "VMID for recording VM" "202"
+ask_input VMID_RECORDING "VMID for recording LXC" "202"
 
 section "Resource Sizing"
 ask_input AUDIO_CORES "audio-engine cores" "4"
@@ -497,21 +400,12 @@ ask_input CONTROL_CORES "control-plane cores" "2"
 ask_input CONTROL_MEM "control-plane memory MB" "2048"
 ask_input CONTROL_ROOTFS "control-plane rootfs GB" "8"
 
-ask_input REC_CORES "recording VM cores" "6"
-ask_input REC_MEM "recording VM memory MB" "8192"
+ask_input REC_CORES "recording LXC cores" "6"
+ask_input REC_MEM "recording LXC memory MB" "8192"
+ask_input REC_ROOTFS "recording LXC rootfs GB" "64"
 
 section "Recording and Audio"
-ask_choice RECORDING_DISK_MODE "recording disk mode (virtual-disk | nvme-passthrough)" "virtual-disk" "virtual-disk" "nvme-passthrough"
-
-RECORDING_PASSTHROUGH=""
-if [[ "${RECORDING_DISK_MODE}" == "nvme-passthrough" ]]; then
-  msg_ok "Scanning for recording passthrough candidates..."
-  pick_recording_passthrough_ref ""
-  RECORDING_PASSTHROUGH="${PICKED_RECORDING_REF}"
-  if [[ -z "${RECORDING_PASSTHROUGH}" ]]; then
-    ask_input RECORDING_PASSTHROUGH "recording passthrough ref (optional, e.g. hostpci0:0000:03:00.0)" ""
-  fi
-fi
+msg_ok "Recording will be created as an LXC with preconfigured rootfs and VLAN networking."
 
 ask_input AUDIO_DEVICE_TYPE "Audio source type" "WING"
 
@@ -530,7 +424,7 @@ ask_choice FIREWALL_PROFILE "Firewall profile (strict | default | open)" "defaul
 ask_input STARTUP_ORDER "Startup order" "control-plane,audio-engine,recording"
 ask_secret_confirm LXC_ROOT_PASSWORD "LXC root password"
 ask_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "yes"
-ask_bool APPLY_NOW "Create the LXC/VM resources now on this Proxmox host" "yes"
+ask_bool APPLY_NOW "Create the LXC resources now on this Proxmox host" "yes"
 ask_bool START_NOW "Start resources immediately after creation" "yes"
 
 echo
@@ -592,12 +486,12 @@ cat > "${CONFIG_JSON}" <<EOF
     },
     "recording": {
       "cores": ${REC_CORES},
-      "memoryMb": ${REC_MEM}
+      "memoryMb": ${REC_MEM},
+      "rootfsGb": ${REC_ROOTFS}
     }
   },
   "recording": {
-    "diskMode": "${RECORDING_DISK_MODE}",
-    "passthroughRef": "${RECORDING_PASSTHROUGH}"
+    "runtime": "lxc"
   },
   "audio": {
     "deviceType": "${AUDIO_DEVICE_TYPE}",
@@ -617,24 +511,24 @@ if [[ "${NETWORK_MODE}" == "single-bridge-vlan-tags" ]]; then
   AUDIO_NET_LINE="net0: name=eth0,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET0_LINE="net0: name=eth0,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET1_LINE="net1: name=eth1,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},ip=dhcp,firewall=1"
-  RECORDING_NET0_LINE="net0: virtio,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},firewall=1"
-  RECORDING_NET1_LINE="net1: virtio,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},firewall=1"
+  RECORDING_NET0_LINE="net0: name=eth0,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},ip=dhcp,firewall=1"
+  RECORDING_NET1_LINE="net1: name=eth1,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},ip=dhcp,firewall=1"
   AUDIO_NET_SPEC="name=eth0,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET0_SPEC="name=eth0,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET1_SPEC="name=eth1,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},ip=dhcp,firewall=1"
-  RECORDING_NET0_SPEC="virtio,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},firewall=1"
-  RECORDING_NET1_SPEC="virtio,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},firewall=1"
+  RECORDING_NET0_SPEC="name=eth0,bridge=${BRIDGE_MAIN},tag=${VLAN_AUDIO},ip=dhcp,firewall=1"
+  RECORDING_NET1_SPEC="name=eth1,bridge=${BRIDGE_MAIN},tag=${VLAN_MGMT},ip=dhcp,firewall=1"
 else
   AUDIO_NET_LINE="net0: name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET0_LINE="net0: name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET1_LINE="net1: name=eth1,bridge=${BRIDGE_MGMT},ip=dhcp,firewall=1"
-  RECORDING_NET0_LINE="net0: virtio,bridge=${BRIDGE_AUDIO},firewall=1"
-  RECORDING_NET1_LINE="net1: virtio,bridge=${BRIDGE_MGMT},firewall=1"
+  RECORDING_NET0_LINE="net0: name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
+  RECORDING_NET1_LINE="net1: name=eth1,bridge=${BRIDGE_MGMT},ip=dhcp,firewall=1"
   AUDIO_NET_SPEC="name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET0_SPEC="name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
   CONTROL_NET1_SPEC="name=eth1,bridge=${BRIDGE_MGMT},ip=dhcp,firewall=1"
-  RECORDING_NET0_SPEC="virtio,bridge=${BRIDGE_AUDIO},firewall=1"
-  RECORDING_NET1_SPEC="virtio,bridge=${BRIDGE_MGMT},firewall=1"
+  RECORDING_NET0_SPEC="name=eth0,bridge=${BRIDGE_AUDIO},ip=dhcp,firewall=1"
+  RECORDING_NET1_SPEC="name=eth1,bridge=${BRIDGE_MGMT},ip=dhcp,firewall=1"
 fi
 
 cat > "${OUTPUT_DIR}/audio-engine-lxc.conf" <<EOF
@@ -677,21 +571,22 @@ onboot: 1
 startup: order=1,up=5
 EOF
 
-cat > "${OUTPUT_DIR}/recording-vm.conf" <<EOF
-# Recording VM (Generated)
+cat > "${OUTPUT_DIR}/recording-lxc.conf" <<EOF
+# Recording LXC (Generated)
 # VMID: ${VMID_RECORDING}
+arch: amd64
+hostname: recording
+ostype: ubuntu
 cores: ${REC_CORES}
 memory: ${REC_MEM}
-scsihw: virtio-scsi-pci
+swap: 0
+rootfs: ${STORAGE_RECORDING}:${REC_ROOTFS}
 ${RECORDING_NET0_LINE}
 ${RECORDING_NET1_LINE}
+unprivileged: 1
 onboot: 1
 startup: order=3,up=20
 EOF
-
-if [[ "${RECORDING_DISK_MODE}" == "nvme-passthrough" && -n "${RECORDING_PASSTHROUGH}" ]]; then
-  echo "${RECORDING_PASSTHROUGH}" >> "${OUTPUT_DIR}/recording-vm.conf"
-fi
 
 if [[ "${AUDIO_UDEV}" == "true" ]]; then
   cat > "${OUTPUT_DIR}/99-wing.rules" <<EOF
@@ -706,7 +601,7 @@ echo "Bootstrap artifacts generated in: ${OUTPUT_DIR}"
 echo "- bootstrap-config.json"
 echo "- audio-engine-lxc.conf"
 echo "- control-plane-lxc.conf"
-echo "- recording-vm.conf"
+echo "- recording-lxc.conf"
 if [[ "${AUDIO_UDEV}" == "true" ]]; then
   echo "- 99-wing.rules"
 fi
