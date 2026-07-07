@@ -1,0 +1,3 @@
+# BDRS persistent USB audio mapping for Behringer WING
+# USB ID verified in lab: 1397:050b
+SUBSYSTEM=="sound", ATTRS{idVendor}=="1397", ATTRS{idProduct}=="050b", SYMLINK+="wing-audio"

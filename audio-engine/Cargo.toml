@@ -7,3 +7,4 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 alsa = "0.9"
 anyhow = "1"
+opus = "0.3"

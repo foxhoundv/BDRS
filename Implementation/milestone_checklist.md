@@ -38,6 +38,11 @@ Source: Implementation package v1.0
 - 2026-07-06: Completed 5-minute live visibility test in LXC 200 (`44100` Hz, `16` sources). Summary written to `/tmp/audio_engine_5min_16src.log`; highest-energy channels observed: 1, 2, 3, 6, 7, 10, 13.
 - 2026-07-06: Added configurable capture sample format in audio-engine (`s16_le` and `s24_in_32_le`) with WING-friendly default, and added control-plane settings API (`GET/PUT /settings/audio-input`, reset endpoint) to fetch/update mixer parameters post-setup.
 - 2026-07-06: Added repo-driven startup defaults to Proxmox bootstrap (`bdrs.sh`) with configurable `repoUrl` + `repoRef` (default `v0.2.0`) and automatic seeding of audio-engine/control-plane default settings from the checked out Git release.
+- 2026-07-06: Completed WING persistent mapping baseline: added udev rule template at `ProxMox/99-wing.rules` using verified USB ID `1397:050b`, and updated ALSA card auto-discovery to prefer `WING`/`Behringer` labels when present.
+- 2026-07-06: Implemented ALSA hotplug auto-rebind flow in `audio-engine/src/main.rs`; capture now continuously retries and re-discovers ALSA devices after open/read failures instead of exiting capture thread.
+- 2026-07-06: Implemented optional Opus encoder stage in `audio-engine/src/main.rs` with 20 ms framing support via `AUDIO_ENGINE_PAYLOAD_CODEC=opus`, enforced at 48 kHz and validated with runtime tests.
+- 2026-07-06: Added packet integrity tracking in `audio-engine/src/main.rs` to validate per-stream sequence continuity and timestamp monotonicity during runtime bounded tests.
+- 2026-07-06: Extended Proxmox bootstrap repo sync to mirror the full checked-out repository into `/opt/bdrs/deploy/current` and update `/opt/bdrs/current` on each fresh bootstrap run.
 
 ## How to use this file
 
@@ -133,10 +138,11 @@ Goal: Produce first reliable broadcast stream from WING input.
 
 Tasks:
 - [ ] Implement ALSA device discovery + persistent mapping for WING
-- [ ] Add hotplug detection and auto-rebind flow
+- [x] Implement ALSA device discovery + persistent mapping for WING
+- [x] Add hotplug detection and auto-rebind flow
 - [x] Build capture pipeline for 48-channel PCM input
 - [x] Implement stream splitter based on channel groups
-- [ ] Add Opus encoder stage (20 ms frames)
+- [x] Add Opus encoder stage (20 ms frames)
 - [x] Add packetizer with header/timestamp/stream_id/seq
 - [x] Add UDP sender with configurable unicast targets
 - [x] Add backpressure and bounded queue handling
@@ -145,7 +151,7 @@ Tasks:
 Acceptance criteria:
 - [ ] Audio Engine survives USB disconnect/reconnect without manual restart
 - [ ] At least one stereo stream is transmitted continuously for 2 hours
-- [ ] Packet sequence continuity and timestamp monotonicity validated
+- [x] Packet sequence continuity and timestamp monotonicity validated
 - [ ] End-to-end audio latency meets defined MVP target
 
 ---
@@ -285,7 +291,7 @@ Work through these in order before resuming milestone tasks.
 
 - [x] 1. Replace `rodio` with `cpal` or `alsa` in `audio-engine/Cargo.toml` — `rodio` is a playback library and cannot capture input; this is blocking a correct build
 - [x] 2. Validate `cargo build` on a Linux machine with ALSA dev headers (`libasound2-dev` installed) — built in LXC 200 (Ubuntu 24.04), finished in 11.86s with no errors
-- [ ] 3. Document WING USB device node — run `lsusb` with WING connected, record the vendor:product ID, write a udev rule in `proxmox/` for persistent ALSA mapping *(skipped — requires physical WING connected)*
+- [x] 3. Document WING USB device node — verified `1397:050b` with WING connected and added persistent mapping rule at `ProxMox/99-wing.rules`
 - [x] 4. Fill in Proxmox network config — VLAN bridge assignments added to all three conf files (VLAN 10 audio, VLAN 20 management; single vmbr0 with tags)
 - [x] 5. Implement T1 ALSA capture thread in audio engine — start with mock output, then wire to real WING device
 - [x] 6. Add fail-fast config error for malformed `AUDIO_ENGINE_STREAM_GROUPS` with an example valid value in message

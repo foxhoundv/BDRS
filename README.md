@@ -87,6 +87,7 @@ Current runtime variables used by the Rust pipeline are:
 - `AUDIO_ENGINE_ALSA_DEVICE` (when ALSA mode is used)
 - `AUDIO_ENGINE_CAPTURE_RATE_HZ` (`44100` or `48000` for `alsa_usb`; `96000` also allowed for planned `dante`)
 - `AUDIO_ENGINE_SAMPLE_FORMAT` (`s24_in_32_le` default for WING-friendly capture, or `s16_le` compatibility mode)
+- `AUDIO_ENGINE_PAYLOAD_CODEC` (`pcm16` default packet payloads, or `opus` for 20 ms Opus encoding at 48000 Hz)
 - `AUDIO_ENGINE_DANTE_MAX_SOURCES` (`1..64`, future `dante` contract)
 - `AUDIO_ENGINE_STREAM_GROUPS` (example: `100:0-1;101:2-3`)
 - `AUDIO_ENGINE_UDP_TARGETS` (comma-separated `host:port` list)
@@ -96,6 +97,8 @@ For WING deployments, set `AUDIO_ENGINE_CAPTURE_RATE_HZ` to match the current co
 Use `AUDIO_ENGINE_SAMPLE_FORMAT=s24_in_32_le` to preserve 24-bit source resolution in a 32-bit container through capture/analysis.
 Set `AUDIO_ENGINE_INPUT_TRANSPORT=alsa_usb` for USB mixers today; `dante` is exposed now as a configuration contract for future implementation.
 The Dante placeholder contract tracks support planning for up to `96000` Hz and up to `64` sources.
+The ALSA capture thread now includes hotplug auto-rebind behavior: on open/read failures it retries and re-discovers available ALSA cards to recover after USB disconnect/reconnect events.
+Set `AUDIO_ENGINE_PAYLOAD_CODEC=opus` if you want the processing stage to emit 20 ms Opus-encoded payloads instead of PCM16 packets; the code currently enforces `48000` Hz for that mode and supports mono/stereo stream groups only.
 
 ## Control-plane audio input settings API
 
@@ -147,6 +150,7 @@ env \
 ```
 
 At the end of the test window, the process exits and prints a `Source Activity Summary` block with per-channel status (`ACTIVE` or `SILENT`), non-zero percentage, and peak sample value.
+It also prints a `Packet Integrity Summary` block that reports per-stream packet counts, sequence gaps, duplicate sequences, and timestamp regressions.
 
 If ALSA headers are missing, install:
 
@@ -177,9 +181,13 @@ When enabled, each started LXC clones/pulls the configured repo ref into `/opt/b
 - `control-plane/.env` from `control-plane/.env.example`
 - `control-plane/audio-input.settings.json` from `control-plane/audio-input.settings.default.json`
 
+The same sync step also mirrors the checked-out repository into `/opt/bdrs/deploy/current` and updates `/opt/bdrs/current` to point at that live deployment tree, so a fresh bootstrap brings in the full latest repo contents, not just default config files.
+
 ## Proxmox rule
 
 Never install project software directly on the Proxmox host. Build and runtime dependencies belong in project LXCs/VMs only.
+
+Persistent WING USB mapping reference rule is available at `ProxMox/99-wing.rules` (USB ID `1397:050b`).
 
 ## Branch and release strategy
 

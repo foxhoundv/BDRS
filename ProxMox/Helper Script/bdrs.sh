@@ -381,8 +381,12 @@ run_repo_sync_in_lxc() {
       apt-get update
       apt-get install -y git ca-certificates
     fi
+    if ! command -v rsync >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y rsync
+    fi
 
-    mkdir -p /opt/bdrs
+    mkdir -p /opt/bdrs/repo /opt/bdrs/deploy/current
     if [[ ! -d /opt/bdrs/repo/.git ]]; then
       if ! git clone --depth 1 --branch "${BDRS_REPO_REF}" "${BDRS_REPO_URL}" /opt/bdrs/repo; then
         git clone "${BDRS_REPO_URL}" /opt/bdrs/repo
@@ -417,6 +421,30 @@ run_repo_sync_in_lxc() {
       *)
         echo "unknown role: ${BDRS_ROLE}" >&2
         exit 1
+        ;;
+    esac
+
+    rsync -a --delete --exclude ".git" /opt/bdrs/repo/ /opt/bdrs/deploy/current/
+
+    if [[ ! -e /opt/bdrs/current ]]; then
+      ln -sfn /opt/bdrs/deploy/current /opt/bdrs/current
+    fi
+
+    case "${BDRS_ROLE}" in
+      control-plane)
+        if [[ -f /opt/bdrs/current/control-plane/.env.example && ! -f /opt/bdrs/current/control-plane/.env ]]; then
+          cp /opt/bdrs/current/control-plane/.env.example /opt/bdrs/current/control-plane/.env
+        fi
+        if [[ -f /opt/bdrs/current/control-plane/audio-input.settings.default.json && ! -f /opt/bdrs/current/control-plane/audio-input.settings.json ]]; then
+          cp /opt/bdrs/current/control-plane/audio-input.settings.default.json /opt/bdrs/current/control-plane/audio-input.settings.json
+        fi
+        ;;
+      audio-engine)
+        if [[ -f /opt/bdrs/current/audio-engine/.env.example && ! -f /opt/bdrs/current/audio-engine/.env ]]; then
+          cp /opt/bdrs/current/audio-engine/.env.example /opt/bdrs/current/audio-engine/.env
+        fi
+        ;;
+      recording)
         ;;
     esac
   '; then

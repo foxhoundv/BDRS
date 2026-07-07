@@ -4,6 +4,7 @@
 // - AUDIO_ENGINE_ALSA_DEVICE: ALSA capture device name (default: default)
 // - AUDIO_ENGINE_CAPTURE_RATE_HZ: 44100|48000 (alsa_usb), 44100|48000|96000 (dante)
 // - AUDIO_ENGINE_SAMPLE_FORMAT: s16_le|s24_in_32_le (default: s24_in_32_le)
+// - AUDIO_ENGINE_PAYLOAD_CODEC: pcm16|opus (default: pcm16)
 // - AUDIO_ENGINE_DANTE_MAX_SOURCES: 1..64 (default: 64)
 // - AUDIO_ENGINE_STREAM_GROUPS: stream mapping (default: 100:0-1;101:2-3)
 // - AUDIO_ENGINE_UDP_TARGETS: comma-separated host:port UDP fanout list
@@ -24,6 +25,8 @@ use input_transport::{
     build_dante_placeholder, DanteTransportConfig, DANTE_MAX_SOURCES_LIMIT,
     DANTE_SUPPORTED_SAMPLE_RATES_HZ,
 };
+use opus::{Application, Channels, Encoder as OpusEncoder};
+use std::collections::HashMap;
 
 const CAPTURE_CHANNELS: u32 = 48;
 const FRAME_MS: u32 = 20;
@@ -57,6 +60,12 @@ enum SampleFormat {
     S24In32Le,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PayloadCodec {
+    Pcm16,
+    Opus,
+}
+
 #[derive(Debug, Clone)]
 struct StreamGroup {
     stream_id: u16,
@@ -69,6 +78,7 @@ struct RuntimeConfig {
     input_transport: InputTransport,
     capture_rate_hz: u32,
     sample_format: SampleFormat,
+    payload_codec: PayloadCodec,
     dante_max_sources: u16,
     frame_samples: usize,
     test_duration_secs: Option<u64>,
@@ -98,6 +108,16 @@ struct ChannelActivity {
     peak_abs: i32,
 }
 
+#[derive(Debug, Clone, Default)]
+struct PacketIntegrityRow {
+    packet_count: u64,
+    last_sequence: Option<u64>,
+    last_timestamp_micros: Option<u128>,
+    sequence_gaps: u64,
+    timestamp_regressions: u64,
+    duplicate_sequences: u64,
+}
+
 fn now_micros() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -106,6 +126,8 @@ fn now_micros() -> u128 {
 }
 
 fn parse_first_alsa_card_device(cards_contents: &str) -> Option<String> {
+    let mut fallback_device: Option<String> = None;
+
     for line in cards_contents.lines() {
         let trimmed = line.trim_start();
         if trimmed.is_empty() {
@@ -116,11 +138,20 @@ fn parse_first_alsa_card_device(cards_contents: &str) -> Option<String> {
         let idx = parts.next()?;
         if idx.chars().all(|c| c.is_ascii_digit()) {
             // Prefer plughw so ALSA can convert hardware-native formats/rates when needed.
-            return Some(format!("plughw:{idx},0"));
+            let device = format!("plughw:{idx},0");
+            let line_lc = trimmed.to_ascii_lowercase();
+
+            if line_lc.contains("wing") || line_lc.contains("behringer") {
+                return Some(device);
+            }
+
+            if fallback_device.is_none() {
+                fallback_device = Some(device);
+            }
         }
     }
 
-    None
+    fallback_device
 }
 
 fn discover_alsa_device_from_proc() -> Option<String> {
@@ -225,6 +256,20 @@ fn dante_max_sources_from_env() -> anyhow::Result<u16> {
     }
 
     Ok(value)
+}
+
+fn payload_codec_from_env() -> anyhow::Result<PayloadCodec> {
+    let raw = std::env::var("AUDIO_ENGINE_PAYLOAD_CODEC")
+        .unwrap_or_else(|_| "pcm16".to_string())
+        .to_lowercase();
+
+    match raw.as_str() {
+        "pcm16" => Ok(PayloadCodec::Pcm16),
+        "opus" => Ok(PayloadCodec::Opus),
+        _ => anyhow::bail!(
+            "unsupported AUDIO_ENGINE_PAYLOAD_CODEC='{raw}'. Supported values: pcm16, opus"
+        ),
+    }
 }
 
 fn test_duration_secs_from_env() -> anyhow::Result<Option<u64>> {
@@ -353,6 +398,7 @@ fn runtime_config_from_env() -> anyhow::Result<RuntimeConfig> {
     let input_transport = input_transport_from_env()?;
     let capture_rate_hz = capture_rate_from_env(input_transport)?;
     let sample_format = capture_sample_format_from_env()?;
+    let payload_codec = payload_codec_from_env()?;
     let dante_max_sources = dante_max_sources_from_env()?;
     let frame_samples = ((capture_rate_hz / 1000) * FRAME_MS) as usize;
     let test_duration_secs = test_duration_secs_from_env()?;
@@ -369,11 +415,18 @@ fn runtime_config_from_env() -> anyhow::Result<RuntimeConfig> {
         .filter(|v| *v > 0)
         .unwrap_or(1024);
 
+    if matches!(payload_codec, PayloadCodec::Opus) && capture_rate_hz != 48_000 {
+        anyhow::bail!(
+            "AUDIO_ENGINE_PAYLOAD_CODEC=opus currently requires AUDIO_ENGINE_CAPTURE_RATE_HZ=48000 (got {capture_rate_hz})"
+        );
+    }
+
     Ok(RuntimeConfig {
         capture_mode,
         input_transport,
         capture_rate_hz,
         sample_format,
+        payload_codec,
         dante_max_sources,
         frame_samples,
         test_duration_secs,
@@ -443,6 +496,66 @@ fn print_channel_activity_summary(activity: &Arc<Mutex<Vec<ChannelActivity>>>) {
     println!("--- End Source Activity Summary ---");
 }
 
+fn update_packet_integrity(
+    integrity: &Arc<Mutex<HashMap<u16, PacketIntegrityRow>>>,
+    stream_id: u16,
+    sequence: u64,
+    timestamp_micros: u128,
+) {
+    let mut guard = match integrity.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    let row = guard.entry(stream_id).or_default();
+    row.packet_count = row.packet_count.saturating_add(1);
+
+    if let Some(last_sequence) = row.last_sequence {
+        if sequence == last_sequence {
+            row.duplicate_sequences = row.duplicate_sequences.saturating_add(1);
+        } else if sequence > last_sequence + 1 {
+            row.sequence_gaps = row.sequence_gaps.saturating_add(sequence - last_sequence - 1);
+        }
+    }
+
+    if let Some(last_timestamp_micros) = row.last_timestamp_micros {
+        if timestamp_micros < last_timestamp_micros {
+            row.timestamp_regressions = row.timestamp_regressions.saturating_add(1);
+        }
+    }
+
+    row.last_sequence = Some(sequence);
+    row.last_timestamp_micros = Some(timestamp_micros);
+}
+
+fn print_packet_integrity_summary(integrity: &Arc<Mutex<HashMap<u16, PacketIntegrityRow>>>) {
+    let guard = match integrity.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            eprintln!("test summary unavailable: packet integrity lock poisoned");
+            return;
+        }
+    };
+
+    println!("--- Packet Integrity Summary ---");
+    let mut stream_ids = guard.keys().copied().collect::<Vec<_>>();
+    stream_ids.sort_unstable();
+
+    for stream_id in stream_ids {
+        if let Some(row) = guard.get(&stream_id) {
+            println!(
+                "stream_id={} packets={} sequence_gaps={} duplicate_sequences={} timestamp_regressions={}",
+                stream_id,
+                row.packet_count,
+                row.sequence_gaps,
+                row.duplicate_sequences,
+                row.timestamp_regressions
+            );
+        }
+    }
+    println!("--- End Packet Integrity Summary ---");
+}
+
 fn spawn_capture_thread(
     tx: SyncSender<CaptureFrame>,
     mode: CaptureMode,
@@ -505,6 +618,64 @@ fn run_alsa_capture(
         "T1 capture mode: ALSA device '{device}' @ {capture_rate_hz}Hz format={:?}",
         sample_format
     );
+
+    // Auto-rebind loop: keep retrying open/read after USB disconnects or ALSA device churn.
+    let mut active_device = device.to_string();
+    let mut rebinding_attempts: u64 = 0;
+
+    loop {
+        let session = run_alsa_capture_session(
+            tx.clone(),
+            &active_device,
+            capture_rate_hz,
+            frame_samples,
+            sample_format,
+        );
+
+        match session {
+            Ok(()) => {
+                // Capture sessions are expected to run indefinitely; if one returns cleanly,
+                // continue and attempt to rebind.
+                eprintln!("ALSA capture session ended unexpectedly; attempting rebind");
+            }
+            Err(err) => {
+                eprintln!(
+                    "ALSA capture session error on '{}': {}. Attempting auto-rebind...",
+                    active_device, err
+                );
+            }
+        }
+
+        rebinding_attempts = rebinding_attempts.saturating_add(1);
+        thread::sleep(Duration::from_secs(2));
+
+        if let Some(discovered) = discover_alsa_device_from_proc() {
+            if discovered != active_device {
+                eprintln!(
+                    "ALSA rebind switched device '{}' -> '{}' (attempt #{})",
+                    active_device, discovered, rebinding_attempts
+                );
+                active_device = discovered;
+                continue;
+            }
+        }
+
+        if rebinding_attempts % 5 == 0 {
+            eprintln!(
+                "ALSA rebind still targeting '{}' after {} attempts",
+                active_device, rebinding_attempts
+            );
+        }
+    }
+}
+
+fn run_alsa_capture_session(
+    tx: SyncSender<CaptureFrame>,
+    device: &str,
+    capture_rate_hz: u32,
+    frame_samples: usize,
+    sample_format: SampleFormat,
+) -> anyhow::Result<()> {
 
     let pcm = PCM::new(device, Direction::Capture, false)?;
     let hwp = HwParams::any(&pcm)?;
@@ -613,15 +784,37 @@ fn split_group_interleaved(frame: &CaptureFrame, group: &StreamGroup) -> anyhow:
 fn encode_pcm16le(interleaved_samples: &[i32], sample_format: SampleFormat) -> Vec<u8> {
     let mut payload = Vec::with_capacity(interleaved_samples.len() * 2);
     for &sample in interleaved_samples {
-        let normalized = match sample_format {
-            SampleFormat::S16Le => sample,
-            // 24-bit signal carried in 32-bit container -> map back to 16-bit packet payload.
-            SampleFormat::S24In32Le => sample >> 8,
-        };
-        let clipped = normalized.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let clipped = normalize_sample_to_pcm16(sample, sample_format);
         payload.extend_from_slice(&clipped.to_le_bytes());
     }
     payload
+}
+
+fn normalize_sample_to_pcm16(sample: i32, sample_format: SampleFormat) -> i16 {
+    let normalized = match sample_format {
+        SampleFormat::S16Le => sample,
+        // 24-bit signal carried in 32-bit container -> map back to 16-bit payload/encoder input.
+        SampleFormat::S24In32Le => sample >> 8,
+    };
+    normalized.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
+
+fn encode_opus(
+    encoder: &mut OpusEncoder,
+    interleaved_samples: &[i32],
+    sample_format: SampleFormat,
+) -> anyhow::Result<Vec<u8>> {
+    let pcm16 = interleaved_samples
+        .iter()
+        .map(|&sample| normalize_sample_to_pcm16(sample, sample_format))
+        .collect::<Vec<_>>();
+
+    let mut out = vec![0_u8; 4000];
+    let encoded_len = encoder
+        .encode(&pcm16, &mut out)
+        .map_err(|err| anyhow::anyhow!("opus encode failed: {err}"))?;
+    out.truncate(encoded_len);
+    Ok(out)
 }
 
 fn build_packet(frame: &CaptureFrame, group: &StreamGroup, payload: &[u8]) -> Vec<u8> {
@@ -647,49 +840,112 @@ fn spawn_processing_thread(
     outbound_tx: SyncSender<OutboundPacket>,
     stream_groups: Vec<StreamGroup>,
     stats: Arc<PipelineStats>,
+    capture_rate_hz: u32,
     sample_format: SampleFormat,
+    payload_codec: PayloadCodec,
     channel_activity: Arc<Mutex<Vec<ChannelActivity>>>,
+    packet_integrity: Arc<Mutex<HashMap<u16, PacketIntegrityRow>>>,
     test_channel_count: usize,
 ) -> thread::JoinHandle<()> {
-    thread::spawn(move || loop {
-        match capture_rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(frame) => {
-                stats.capture_frames.fetch_add(1, Ordering::Relaxed);
-                update_channel_activity(&frame, test_channel_count, &channel_activity);
+    thread::spawn(move || {
+        let mut opus_encoders = std::collections::HashMap::<u16, OpusEncoder>::new();
 
-                for group in &stream_groups {
-                    let split = match split_group_interleaved(&frame, group) {
-                        Ok(v) => v,
-                        Err(err) => {
-                            eprintln!("splitter error for stream {}: {err}", group.stream_id);
-                            continue;
-                        }
-                    };
+        if matches!(payload_codec, PayloadCodec::Opus) {
+            for group in &stream_groups {
+                let channels = match group.channels.len() {
+                    1 => Channels::Mono,
+                    2 => Channels::Stereo,
+                    n => {
+                        eprintln!(
+                            "stream {} skipped for opus: unsupported channel count {} (only mono/stereo)",
+                            group.stream_id, n
+                        );
+                        continue;
+                    }
+                };
 
-                    let encoded_payload = encode_pcm16le(&split, sample_format);
-                    let bytes = build_packet(&frame, group, &encoded_payload);
-                    match outbound_tx.try_send(OutboundPacket { bytes }) {
-                        Ok(()) => {
-                            stats.packets_enqueued.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(TrySendError::Full(_)) => {
-                            stats
-                                .packets_dropped_queue_full
-                                .fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(TrySendError::Disconnected(_)) => {
-                            eprintln!("outbound queue disconnected; processing thread exiting");
-                            return;
-                        }
+                match OpusEncoder::new(capture_rate_hz, channels, Application::Audio) {
+                    Ok(enc) => {
+                        opus_encoders.insert(group.stream_id, enc);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "failed to create opus encoder for stream {}: {}",
+                            group.stream_id, err
+                        );
                     }
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {
-                eprintln!("capture warning: no frames received in 200ms window");
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                eprintln!("capture thread disconnected unexpectedly");
-                return;
+        }
+
+        loop {
+            match capture_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(frame) => {
+                    stats.capture_frames.fetch_add(1, Ordering::Relaxed);
+                    update_channel_activity(&frame, test_channel_count, &channel_activity);
+
+                    for group in &stream_groups {
+                        let split = match split_group_interleaved(&frame, group) {
+                            Ok(v) => v,
+                            Err(err) => {
+                                eprintln!("splitter error for stream {}: {err}", group.stream_id);
+                                continue;
+                            }
+                        };
+
+                        let encoded_payload = match payload_codec {
+                            PayloadCodec::Pcm16 => encode_pcm16le(&split, sample_format),
+                            PayloadCodec::Opus => {
+                                let Some(encoder) = opus_encoders.get_mut(&group.stream_id) else {
+                                    eprintln!(
+                                        "stream {} skipped: no opus encoder available",
+                                        group.stream_id
+                                    );
+                                    continue;
+                                };
+
+                                match encode_opus(encoder, &split, sample_format) {
+                                    Ok(v) => v,
+                                    Err(err) => {
+                                        eprintln!(
+                                            "opus encode error for stream {}: {}",
+                                            group.stream_id, err
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                        };
+                        let bytes = build_packet(&frame, group, &encoded_payload);
+                        update_packet_integrity(
+                            &packet_integrity,
+                            group.stream_id,
+                            frame.sequence,
+                            frame.timestamp_micros,
+                        );
+                        match outbound_tx.try_send(OutboundPacket { bytes }) {
+                            Ok(()) => {
+                                stats.packets_enqueued.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(TrySendError::Full(_)) => {
+                                stats
+                                    .packets_dropped_queue_full
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(TrySendError::Disconnected(_)) => {
+                                eprintln!("outbound queue disconnected; processing thread exiting");
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    eprintln!("capture warning: no frames received in 200ms window");
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    eprintln!("capture thread disconnected unexpectedly");
+                    return;
+                }
             }
         }
     })
@@ -745,11 +1001,12 @@ fn main() -> anyhow::Result<()> {
 
     let config = runtime_config_from_env()?;
     println!(
-        "runtime config: mode={:?} transport={:?} rate_hz={} sample_format={:?} frame_samples={} dante_max_sources={} test_duration_secs={:?} test_channel_count={} groups={} udp_targets={} outbound_queue_depth={}",
+        "runtime config: mode={:?} transport={:?} rate_hz={} sample_format={:?} payload_codec={:?} frame_samples={} dante_max_sources={} test_duration_secs={:?} test_channel_count={} groups={} udp_targets={} outbound_queue_depth={}",
         config.capture_mode,
         config.input_transport,
         config.capture_rate_hz,
         config.sample_format,
+        config.payload_codec,
         config.frame_samples,
         config.dante_max_sources,
         config.test_duration_secs,
@@ -783,6 +1040,7 @@ fn main() -> anyhow::Result<()> {
         ChannelActivity::default();
         config.test_channel_count
     ]));
+    let packet_integrity = Arc::new(Mutex::new(HashMap::<u16, PacketIntegrityRow>::new()));
 
     let (capture_tx, capture_rx) = sync_channel::<CaptureFrame>(512);
     let (outbound_tx, outbound_rx) = sync_channel::<OutboundPacket>(config.outbound_queue_depth);
@@ -799,8 +1057,11 @@ fn main() -> anyhow::Result<()> {
         outbound_tx,
         config.stream_groups.clone(),
         stats.clone(),
+        config.capture_rate_hz,
         config.sample_format,
+        config.payload_codec,
         channel_activity.clone(),
+        packet_integrity.clone(),
         config.test_channel_count,
     );
     let _sender_handle = spawn_udp_sender_thread(outbound_rx, config.udp_targets.clone(), stats.clone());
@@ -827,6 +1088,7 @@ fn main() -> anyhow::Result<()> {
             if start_time.elapsed() >= Duration::from_secs(duration_secs) {
                 println!("test window completed: {} seconds", duration_secs);
                 print_channel_activity_summary(&channel_activity);
+                print_packet_integrity_summary(&packet_integrity);
                 return Ok(());
             }
         }
@@ -842,6 +1104,20 @@ mod tests {
         let cards = " 0 [PCH            ]: HDA-Intel - HDA Intel PCH\n 1 [USB            ]: USB-Audio - USB Audio Device\n";
         let device = parse_first_alsa_card_device(cards).expect("should parse first card");
         assert_eq!(device, "plughw:0,0");
+    }
+
+    #[test]
+    fn parse_first_alsa_card_device_prefers_wing_card_when_present() {
+        let cards = " 0 [PCH            ]: HDA-Intel - HDA Intel PCH\n 1 [WING           ]: USB-Audio - Behringer WING\n";
+        let device = parse_first_alsa_card_device(cards).expect("should parse wing card");
+        assert_eq!(device, "plughw:1,0");
+    }
+
+    #[test]
+    fn parse_first_alsa_card_device_prefers_behringer_label_when_present() {
+        let cards = " 2 [USB            ]: USB-Audio - Generic USB Device\n 3 [XAIR           ]: USB-Audio - Behringer XR18\n";
+        let device = parse_first_alsa_card_device(cards).expect("should parse behringer card");
+        assert_eq!(device, "plughw:3,0");
     }
 
     #[test]
@@ -948,6 +1224,33 @@ mod tests {
     }
 
     #[test]
+    fn payload_codec_from_env_accepts_supported_values() {
+        std::env::set_var("AUDIO_ENGINE_PAYLOAD_CODEC", "pcm16");
+        assert!(matches!(
+            payload_codec_from_env().expect("pcm16 should parse"),
+            PayloadCodec::Pcm16
+        ));
+
+        std::env::set_var("AUDIO_ENGINE_PAYLOAD_CODEC", "opus");
+        assert!(matches!(
+            payload_codec_from_env().expect("opus should parse"),
+            PayloadCodec::Opus
+        ));
+
+        std::env::remove_var("AUDIO_ENGINE_PAYLOAD_CODEC");
+    }
+
+    #[test]
+    fn payload_codec_from_env_rejects_unknown_values() {
+        std::env::set_var("AUDIO_ENGINE_PAYLOAD_CODEC", "flac");
+        let err = payload_codec_from_env().expect_err("unknown payload codec must fail");
+        assert!(err
+            .to_string()
+            .contains("Supported values: pcm16, opus"));
+        std::env::remove_var("AUDIO_ENGINE_PAYLOAD_CODEC");
+    }
+
+    #[test]
     fn dante_max_sources_from_env_rejects_values_over_limit() {
         std::env::set_var("AUDIO_ENGINE_DANTE_MAX_SOURCES", "65");
         let err = dante_max_sources_from_env().expect_err("65 should be out of range");
@@ -1049,5 +1352,34 @@ mod tests {
 
         assert!(seq_b > seq_a);
         assert!(ts_b > ts_a);
+    }
+
+    #[test]
+    fn packet_integrity_tracker_counts_sequence_gaps() {
+        let integrity = Arc::new(Mutex::new(HashMap::<u16, PacketIntegrityRow>::new()));
+
+        update_packet_integrity(&integrity, 100, 1, 1_000);
+        update_packet_integrity(&integrity, 100, 3, 2_000);
+
+        let guard = integrity.lock().expect("integrity lock should work");
+        let row = guard.get(&100).expect("row should exist");
+        assert_eq!(row.packet_count, 2);
+        assert_eq!(row.sequence_gaps, 1);
+        assert_eq!(row.duplicate_sequences, 0);
+        assert_eq!(row.timestamp_regressions, 0);
+    }
+
+    #[test]
+    fn packet_integrity_tracker_counts_timestamp_regressions() {
+        let integrity = Arc::new(Mutex::new(HashMap::<u16, PacketIntegrityRow>::new()));
+
+        update_packet_integrity(&integrity, 101, 10, 2_000);
+        update_packet_integrity(&integrity, 101, 11, 1_500);
+
+        let guard = integrity.lock().expect("integrity lock should work");
+        let row = guard.get(&101).expect("row should exist");
+        assert_eq!(row.packet_count, 2);
+        assert_eq!(row.sequence_gaps, 0);
+        assert_eq!(row.timestamp_regressions, 1);
     }
 }
