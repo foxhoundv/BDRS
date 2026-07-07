@@ -183,6 +183,35 @@ When enabled, each started LXC clones/pulls the configured repo ref into `/opt/b
 
 The same sync step also mirrors the checked-out repository into `/opt/bdrs/deploy/current` and updates `/opt/bdrs/current` to point at that live deployment tree, so a fresh bootstrap brings in the full latest repo contents, not just default config files.
 
+### Sync existing LXCs without rebuild
+
+You can refresh already-running LXCs without deleting/recreating them:
+
+```bash
+./ProxMox/helper/bdrs.sh --sync-only
+```
+
+Optional overrides:
+
+```bash
+./ProxMox/helper/bdrs.sh --sync-only \
+	--repo-url https://github.com/foxhoundv/BDRS.git \
+	--repo-ref v0.2.0 \
+	--control-vmid 201 \
+	--audio-vmid 200 \
+	--recording-vmid 202
+```
+
+`--sync-only` performs repository pull + deployment mirror + default-config seeding for the target LXCs, and skips interactive provisioning prompts.
+
+User setting overrides are preserved across sync runs:
+
+- Override snapshots are stored under `/opt/bdrs/state/user-overrides`.
+- A settings path manifest at `/opt/bdrs/state/settings-manifest.tsv` tracks where key settings live.
+- During sync, the script preserves current user-edited settings, updates files, then reapplies overrides.
+
+This prevents users from redoing settings after updates and helps carry settings forward when tracked config paths move.
+
 ## Proxmox rule
 
 Never install project software directly on the Proxmox host. Build and runtime dependencies belong in project LXCs/VMs only.

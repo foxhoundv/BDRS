@@ -43,6 +43,8 @@ Source: Implementation package v1.0
 - 2026-07-06: Implemented optional Opus encoder stage in `audio-engine/src/main.rs` with 20 ms framing support via `AUDIO_ENGINE_PAYLOAD_CODEC=opus`, enforced at 48 kHz and validated with runtime tests.
 - 2026-07-06: Added packet integrity tracking in `audio-engine/src/main.rs` to validate per-stream sequence continuity and timestamp monotonicity during runtime bounded tests.
 - 2026-07-06: Extended Proxmox bootstrap repo sync to mirror the full checked-out repository into `/opt/bdrs/deploy/current` and update `/opt/bdrs/current` on each fresh bootstrap run.
+- 2026-07-06: Added non-interactive `--sync-only` mode to `ProxMox/helper/bdrs.sh` so existing LXCs can pull and apply latest repo/deploy/default-config updates without full container rebuild.
+- 2026-07-06: Added persistent user-settings retention across sync runs in `bdrs.sh` via `/opt/bdrs/state/user-overrides` plus `settings-manifest.tsv` path tracking, so updated deployments keep user overrides instead of resetting to defaults.
 
 ## How to use this file
 

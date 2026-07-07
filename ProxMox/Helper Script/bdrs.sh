@@ -386,7 +386,80 @@ run_repo_sync_in_lxc() {
       apt-get install -y rsync
     fi
 
-    mkdir -p /opt/bdrs/repo /opt/bdrs/deploy/current
+    mkdir -p /opt/bdrs/repo /opt/bdrs/deploy/current /opt/bdrs/state/user-overrides
+    STATE_DIR="/opt/bdrs/state"
+    OVERRIDES_DIR="${STATE_DIR}/user-overrides"
+    MANIFEST_PATH="${STATE_DIR}/settings-manifest.tsv"
+
+    get_manifest_path() {
+      local key="$1"
+      if [[ ! -f "${MANIFEST_PATH}" ]]; then
+        return 1
+      fi
+      awk -F '\t' -v wanted="${key}" '$1==wanted {print $2}' "${MANIFEST_PATH}" | tail -n 1
+    }
+
+    set_manifest_path() {
+      local key="$1"
+      local rel_path="$2"
+      local tmp_path
+      tmp_path="${MANIFEST_PATH}.tmp"
+      if [[ -f "${MANIFEST_PATH}" ]]; then
+        awk -F '\t' -v wanted="${key}" '$1!=wanted {print $1"\t"$2}' "${MANIFEST_PATH}" > "${tmp_path}" || true
+      else
+        : > "${tmp_path}"
+      fi
+      echo "${key}\t${rel_path}" >> "${tmp_path}"
+      mv "${tmp_path}" "${MANIFEST_PATH}"
+    }
+
+    resolve_setting_rel_path() {
+      local key="$1"
+      local default_rel="$2"
+      shift 2
+
+      local saved_rel
+      saved_rel="$(get_manifest_path "${key}" || true)"
+      if [[ -n "${saved_rel}" && -f "/opt/bdrs/deploy/current/${saved_rel}" ]]; then
+        echo "${saved_rel}"
+        return 0
+      fi
+
+      local candidate
+      for candidate in "$@"; do
+        if [[ -f "/opt/bdrs/deploy/current/${candidate}" ]]; then
+          echo "${candidate}"
+          return 0
+        fi
+      done
+
+      echo "${default_rel}"
+    }
+
+    preserve_override() {
+      local rel_path="$1"
+      if [[ -f "/opt/bdrs/current/${rel_path}" ]]; then
+        mkdir -p "${OVERRIDES_DIR}/$(dirname "${rel_path}")"
+        cp -f "/opt/bdrs/current/${rel_path}" "${OVERRIDES_DIR}/${rel_path}"
+      fi
+    }
+
+    apply_override() {
+      local rel_path="$1"
+      if [[ -f "${OVERRIDES_DIR}/${rel_path}" ]]; then
+        mkdir -p "/opt/bdrs/current/$(dirname "${rel_path}")"
+        cp -f "${OVERRIDES_DIR}/${rel_path}" "/opt/bdrs/current/${rel_path}"
+      fi
+    }
+
+    CONTROL_ENV_REL="$(resolve_setting_rel_path "control_plane_env" "control-plane/.env" "control-plane/.env" "control-plane/config/.env")"
+    CONTROL_AUDIO_SETTINGS_REL="$(resolve_setting_rel_path "control_plane_audio_settings" "control-plane/audio-input.settings.json" "control-plane/audio-input.settings.json" "control-plane/config/audio-input.settings.json")"
+    AUDIO_ENV_REL="$(resolve_setting_rel_path "audio_engine_env" "audio-engine/.env" "audio-engine/.env" "audio-engine/config/.env")"
+
+    preserve_override "${CONTROL_ENV_REL}"
+    preserve_override "${CONTROL_AUDIO_SETTINGS_REL}"
+    preserve_override "${AUDIO_ENV_REL}"
+
     if [[ ! -d /opt/bdrs/repo/.git ]]; then
       if ! git clone --depth 1 --branch "${BDRS_REPO_REF}" "${BDRS_REPO_URL}" /opt/bdrs/repo; then
         git clone "${BDRS_REPO_URL}" /opt/bdrs/repo
@@ -426,23 +499,32 @@ run_repo_sync_in_lxc() {
 
     rsync -a --delete --exclude ".git" /opt/bdrs/repo/ /opt/bdrs/deploy/current/
 
-    if [[ ! -e /opt/bdrs/current ]]; then
-      ln -sfn /opt/bdrs/deploy/current /opt/bdrs/current
-    fi
+    ln -sfn /opt/bdrs/deploy/current /opt/bdrs/current
+
+    CONTROL_ENV_REL="$(resolve_setting_rel_path "control_plane_env" "control-plane/.env" "control-plane/.env" "control-plane/config/.env")"
+    CONTROL_AUDIO_SETTINGS_REL="$(resolve_setting_rel_path "control_plane_audio_settings" "control-plane/audio-input.settings.json" "control-plane/audio-input.settings.json" "control-plane/config/audio-input.settings.json")"
+    AUDIO_ENV_REL="$(resolve_setting_rel_path "audio_engine_env" "audio-engine/.env" "audio-engine/.env" "audio-engine/config/.env")"
+
+    set_manifest_path "control_plane_env" "${CONTROL_ENV_REL}"
+    set_manifest_path "control_plane_audio_settings" "${CONTROL_AUDIO_SETTINGS_REL}"
+    set_manifest_path "audio_engine_env" "${AUDIO_ENV_REL}"
 
     case "${BDRS_ROLE}" in
       control-plane)
-        if [[ -f /opt/bdrs/current/control-plane/.env.example && ! -f /opt/bdrs/current/control-plane/.env ]]; then
-          cp /opt/bdrs/current/control-plane/.env.example /opt/bdrs/current/control-plane/.env
+        if [[ -f "/opt/bdrs/current/${CONTROL_ENV_REL}.example" && ! -f "/opt/bdrs/current/${CONTROL_ENV_REL}" ]]; then
+          cp "/opt/bdrs/current/${CONTROL_ENV_REL}.example" "/opt/bdrs/current/${CONTROL_ENV_REL}"
         fi
-        if [[ -f /opt/bdrs/current/control-plane/audio-input.settings.default.json && ! -f /opt/bdrs/current/control-plane/audio-input.settings.json ]]; then
-          cp /opt/bdrs/current/control-plane/audio-input.settings.default.json /opt/bdrs/current/control-plane/audio-input.settings.json
+        if [[ -f "/opt/bdrs/current/$(dirname "${CONTROL_AUDIO_SETTINGS_REL}")/audio-input.settings.default.json" && ! -f "/opt/bdrs/current/${CONTROL_AUDIO_SETTINGS_REL}" ]]; then
+          cp "/opt/bdrs/current/$(dirname "${CONTROL_AUDIO_SETTINGS_REL}")/audio-input.settings.default.json" "/opt/bdrs/current/${CONTROL_AUDIO_SETTINGS_REL}"
         fi
+        apply_override "${CONTROL_ENV_REL}"
+        apply_override "${CONTROL_AUDIO_SETTINGS_REL}"
         ;;
       audio-engine)
-        if [[ -f /opt/bdrs/current/audio-engine/.env.example && ! -f /opt/bdrs/current/audio-engine/.env ]]; then
-          cp /opt/bdrs/current/audio-engine/.env.example /opt/bdrs/current/audio-engine/.env
+        if [[ -f "/opt/bdrs/current/${AUDIO_ENV_REL}.example" && ! -f "/opt/bdrs/current/${AUDIO_ENV_REL}" ]]; then
+          cp "/opt/bdrs/current/${AUDIO_ENV_REL}.example" "/opt/bdrs/current/${AUDIO_ENV_REL}"
         fi
+        apply_override "${AUDIO_ENV_REL}"
         ;;
       recording)
         ;;
@@ -458,6 +540,78 @@ run_post_create_repo_sync() {
   run_repo_sync_in_lxc "${VMID_AUDIO}" "audio-engine" "audio-engine"
   run_repo_sync_in_lxc "${VMID_RECORDING}" "recording" "recording"
 }
+
+print_sync_only_help() {
+  cat <<'EOF'
+Usage:
+  bdrs.sh --sync-only [options]
+
+Options:
+  --repo-url <url>          Git repository URL (default: https://github.com/foxhoundv/BDRS.git)
+  --repo-ref <ref>          Branch or tag to sync (default: v0.2.0)
+  --audio-vmid <id>         Audio Engine LXC VMID (default: 200)
+  --control-vmid <id>       Control Plane LXC VMID (default: 201)
+  --recording-vmid <id>     Recording LXC VMID (default: 202)
+  -h, --help                Show help
+EOF
+}
+
+run_sync_only_mode() {
+  BOOTSTRAP_REPO_URL="https://github.com/foxhoundv/BDRS.git"
+  BOOTSTRAP_REPO_REF="v0.2.0"
+  VMID_AUDIO="200"
+  VMID_CONTROL="201"
+  VMID_RECORDING="202"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo-url)
+        BOOTSTRAP_REPO_URL="$2"
+        shift 2
+        ;;
+      --repo-ref)
+        BOOTSTRAP_REPO_REF="$2"
+        shift 2
+        ;;
+      --audio-vmid)
+        VMID_AUDIO="$2"
+        shift 2
+        ;;
+      --control-vmid)
+        VMID_CONTROL="$2"
+        shift 2
+        ;;
+      --recording-vmid)
+        VMID_RECORDING="$2"
+        shift 2
+        ;;
+      -h|--help)
+        print_sync_only_help
+        exit 0
+        ;;
+      *)
+        msg_error "Unknown --sync-only option: $1"
+        print_sync_only_help
+        exit 1
+        ;;
+    esac
+  done
+
+  section "Repository Sync Only Mode"
+  msg_ok "Repo URL: ${BOOTSTRAP_REPO_URL}"
+  msg_ok "Repo ref: ${BOOTSTRAP_REPO_REF}"
+  msg_ok "VMIDs: control=${VMID_CONTROL}, audio=${VMID_AUDIO}, recording=${VMID_RECORDING}"
+
+  ensure_command pct
+  run_post_create_repo_sync
+  msg_ok "Sync-only run complete."
+  exit 0
+}
+
+if [[ "${1:-}" == "--sync-only" ]]; then
+  shift
+  run_sync_only_mode "$@"
+fi
 
 header_info
 
