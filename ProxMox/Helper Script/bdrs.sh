@@ -340,6 +340,28 @@ start_created_resources() {
   msg_ok "Startup sequence complete (control-plane -> audio-engine -> recording)."
 }
 
+run_apt_maintenance_in_lxc() {
+  local vmid="$1"
+  local name="$2"
+
+  if ! pct status "${vmid}" 2>/dev/null | grep -q "status: running"; then
+    msg_warn "Skipping apt maintenance for ${name} (${vmid}) because it is not running."
+    return 0
+  fi
+
+  msg_ok "Running apt update/upgrade in ${name} (${vmid})"
+  if ! pct exec "${vmid}" -- bash -lc 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get -y upgrade'; then
+    msg_warn "apt maintenance failed in ${name} (${vmid}). Check networking/DNS inside the container."
+  fi
+}
+
+run_post_create_apt_maintenance() {
+  section "Post-Create Package Maintenance"
+  run_apt_maintenance_in_lxc "${VMID_CONTROL}" "control-plane"
+  run_apt_maintenance_in_lxc "${VMID_AUDIO}" "audio-engine"
+  run_apt_maintenance_in_lxc "${VMID_RECORDING}" "recording"
+}
+
 header_info
 
 # This helper is intended to run directly on the Proxmox host.
@@ -426,6 +448,7 @@ ask_secret_confirm LXC_ROOT_PASSWORD "LXC root password"
 ask_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "yes"
 ask_bool APPLY_NOW "Create the LXC resources now on this Proxmox host" "yes"
 ask_bool START_NOW "Start resources immediately after creation" "yes"
+ask_bool RUN_APT_MAINTENANCE "Run apt update && apt -y upgrade in all LXCs after start" "yes"
 
 echo
 echo -e "${BL}Configuration Summary${CL}"
@@ -502,6 +525,7 @@ cat > "${CONFIG_JSON}" <<EOF
     "firewallProfile": "${FIREWALL_PROFILE}",
     "startupOrder": "${STARTUP_ORDER}",
     "installBuildTooling": ${INSTALL_BUILD_TOOLING},
+    "runAptMaintenance": ${RUN_APT_MAINTENANCE},
     "lxcRootPasswordSet": true
   }
 }
@@ -610,8 +634,14 @@ if [[ "${APPLY_NOW}" == "true" ]]; then
   apply_generated_resources
   if [[ "${START_NOW}" == "true" ]]; then
     start_created_resources
+    if [[ "${RUN_APT_MAINTENANCE}" == "true" ]]; then
+      run_post_create_apt_maintenance
+    fi
   else
     msg_warn "Resources created but not started (START_NOW=no)."
+    if [[ "${RUN_APT_MAINTENANCE}" == "true" ]]; then
+      msg_warn "Skipped apt maintenance because START_NOW=no. Start LXCs first, then re-run apt manually."
+    fi
   fi
 else
   msg_warn "Generation finished. APPLY_NOW=no, so no LXC/VM resources were created."
