@@ -1,0 +1,11 @@
+{
+  "mixerProfile": "wing",
+  "captureMode": "alsa",
+  "inputTransport": "alsa_usb",
+  "alsaDevice": "plughw:0,0",
+  "captureRateHz": 44100,
+  "sampleFormat": "s24_in_32_le",
+  "channelCount": 48,
+  "testChannelCount": 16,
+  "danteMaxSources": 64
+}

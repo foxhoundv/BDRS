@@ -362,6 +362,75 @@ run_post_create_apt_maintenance() {
   run_apt_maintenance_in_lxc "${VMID_RECORDING}" "recording"
 }
 
+run_repo_sync_in_lxc() {
+  local vmid="$1"
+  local name="$2"
+  local role="$3"
+
+  if ! pct status "${vmid}" 2>/dev/null | grep -q "status: running"; then
+    msg_warn "Skipping repository sync for ${name} (${vmid}) because it is not running."
+    return 0
+  fi
+
+  msg_ok "Syncing repository defaults in ${name} (${vmid}) from ${BOOTSTRAP_REPO_URL}@${BOOTSTRAP_REPO_REF}"
+  if ! pct exec "${vmid}" -- env BDRS_REPO_URL="${BOOTSTRAP_REPO_URL}" BDRS_REPO_REF="${BOOTSTRAP_REPO_REF}" BDRS_ROLE="${role}" bash -lc '
+    set -euo pipefail
+
+    export DEBIAN_FRONTEND=noninteractive
+    if ! command -v git >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y git ca-certificates
+    fi
+
+    mkdir -p /opt/bdrs
+    if [[ ! -d /opt/bdrs/repo/.git ]]; then
+      if ! git clone --depth 1 --branch "${BDRS_REPO_REF}" "${BDRS_REPO_URL}" /opt/bdrs/repo; then
+        git clone "${BDRS_REPO_URL}" /opt/bdrs/repo
+        cd /opt/bdrs/repo
+        git checkout "${BDRS_REPO_REF}"
+      fi
+    else
+      cd /opt/bdrs/repo
+      git fetch --tags origin
+      git checkout "${BDRS_REPO_REF}"
+      if git ls-remote --exit-code --heads origin "${BDRS_REPO_REF}" >/dev/null 2>&1; then
+        git pull --ff-only origin "${BDRS_REPO_REF}"
+      fi
+    fi
+
+    case "${BDRS_ROLE}" in
+      control-plane)
+        if [[ -f /opt/bdrs/repo/control-plane/.env.example && ! -f /opt/bdrs/repo/control-plane/.env ]]; then
+          cp /opt/bdrs/repo/control-plane/.env.example /opt/bdrs/repo/control-plane/.env
+        fi
+        if [[ -f /opt/bdrs/repo/control-plane/audio-input.settings.default.json && ! -f /opt/bdrs/repo/control-plane/audio-input.settings.json ]]; then
+          cp /opt/bdrs/repo/control-plane/audio-input.settings.default.json /opt/bdrs/repo/control-plane/audio-input.settings.json
+        fi
+        ;;
+      audio-engine)
+        if [[ -f /opt/bdrs/repo/audio-engine/.env.example && ! -f /opt/bdrs/repo/audio-engine/.env ]]; then
+          cp /opt/bdrs/repo/audio-engine/.env.example /opt/bdrs/repo/audio-engine/.env
+        fi
+        ;;
+      recording)
+        ;;
+      *)
+        echo "unknown role: ${BDRS_ROLE}" >&2
+        exit 1
+        ;;
+    esac
+  '; then
+    msg_warn "Repository sync failed in ${name} (${vmid}). Check git access and networking inside the container."
+  fi
+}
+
+run_post_create_repo_sync() {
+  section "Post-Create Repository Sync"
+  run_repo_sync_in_lxc "${VMID_CONTROL}" "control-plane" "control-plane"
+  run_repo_sync_in_lxc "${VMID_AUDIO}" "audio-engine" "audio-engine"
+  run_repo_sync_in_lxc "${VMID_RECORDING}" "recording" "recording"
+}
+
 header_info
 
 # This helper is intended to run directly on the Proxmox host.
@@ -440,11 +509,14 @@ ask_bool AUDIO_UDEV "Generate ALSA udev rule file" "yes"
 section "Bootstrap Behavior"
 ask_choice FIREWALL_PROFILE "Firewall profile (strict | default | open)" "default" "strict" "default" "open"
 ask_input STARTUP_ORDER "Startup order" "control-plane,audio-engine,recording"
+ask_input BOOTSTRAP_REPO_URL "Git repo URL for machine defaults" "https://github.com/foxhoundv/BDRS.git"
+ask_input BOOTSTRAP_REPO_REF "Git branch/tag for startup defaults" "v0.2.0"
 ask_secret_confirm LXC_ROOT_PASSWORD "LXC root password"
 ask_bool INSTALL_BUILD_TOOLING "Install Rust/build tooling inside containers" "yes"
 ask_bool APPLY_NOW "Create the LXC resources now on this Proxmox host" "yes"
 ask_bool START_NOW "Start resources immediately after creation" "yes"
 ask_bool RUN_APT_MAINTENANCE "Run apt update && apt -y upgrade in all LXCs after start" "yes"
+ask_bool SYNC_DEFAULTS_FROM_REPO "Pull default configs/settings from git repo after startup" "yes"
 
 echo
 echo -e "${BL}Configuration Summary${CL}"
@@ -518,6 +590,9 @@ cat > "${CONFIG_JSON}" <<EOF
   "bootstrap": {
     "firewallProfile": "${FIREWALL_PROFILE}",
     "startupOrder": "${STARTUP_ORDER}",
+    "repoUrl": "${BOOTSTRAP_REPO_URL}",
+    "repoRef": "${BOOTSTRAP_REPO_REF}",
+    "syncDefaultsFromRepo": ${SYNC_DEFAULTS_FROM_REPO},
     "installBuildTooling": ${INSTALL_BUILD_TOOLING},
     "runAptMaintenance": ${RUN_APT_MAINTENANCE},
     "lxcRootPasswordSet": true
@@ -631,10 +706,16 @@ if [[ "${APPLY_NOW}" == "true" ]]; then
     if [[ "${RUN_APT_MAINTENANCE}" == "true" ]]; then
       run_post_create_apt_maintenance
     fi
+    if [[ "${SYNC_DEFAULTS_FROM_REPO}" == "true" ]]; then
+      run_post_create_repo_sync
+    fi
   else
     msg_warn "Resources created but not started (START_NOW=no)."
     if [[ "${RUN_APT_MAINTENANCE}" == "true" ]]; then
       msg_warn "Skipped apt maintenance because START_NOW=no. Start LXCs first, then re-run apt manually."
+    fi
+    if [[ "${SYNC_DEFAULTS_FROM_REPO}" == "true" ]]; then
+      msg_warn "Skipped repository sync because START_NOW=no. Start LXCs first, then re-run sync manually."
     fi
   fi
 else

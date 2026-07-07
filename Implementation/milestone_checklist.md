@@ -19,6 +19,25 @@ Source: Implementation package v1.0
 - 2026-07-02: Added Proxmox helper bootstrap schema at `proxmox/helper/bootstrap-config.schema.json` and starter script at `proxmox/helper/bdrs.sh`.
 - 2026-07-02: Implemented Audio Engine T1 capture thread with `mock` and `alsa` capture modes in `audio-engine/src/main.rs`.
 - 2026-07-06: Implemented Milestone 2 pipeline scaffold in `audio-engine/src/main.rs`: PCM payload capture, stream group splitter, packetizer, UDP sender, bounded queue backpressure counters, and runtime config loading from env.
+- 2026-07-06: Expanded top-level `README.md` with architecture context, compose quickstart, audio-engine runtime/env details, and validation steps for new developers.
+- 2026-07-06: Aligned `audio-engine/.env.example` with active `AUDIO_ENGINE_*` runtime variables and removed README mismatch warning.
+- 2026-07-06: Added runtime env contract comments to `audio-engine/src/main.rs` to document active `AUDIO_ENGINE_*` variables in code.
+- 2026-07-06: Added startup validation warning in `audio-engine/src/main.rs` when non-mock capture runs without `AUDIO_ENGINE_UDP_TARGETS` configured.
+- 2026-07-06: Added packet/parser integrity unit tests in `audio-engine/src/main.rs` for channel expression parsing and packet sequence/timestamp field validation.
+- 2026-07-06: Added fail-fast config error context in `audio-engine/src/main.rs` for malformed `AUDIO_ENGINE_STREAM_GROUPS`, including an example valid value.
+- 2026-07-06: Deferred live runtime test execution until USB audio transmission path is ready; continue implementation and static/unit validation in the meantime.
+- 2026-07-06: Added first-pass ALSA device auto-discovery fallback in `audio-engine/src/main.rs` from `/proc/asound/cards` with parser unit tests.
+- 2026-07-06: Verified live WING USB visibility on Proxmox host (`lsusb` showed `1397:050b`) and passthrough in LXC 200 (`/proc/asound/cards` showed card `WING`).
+- 2026-07-06: Verified direct capture in LXC 200 with ALSA tools. Hardware-native mode reported `S24_3LE`, `48` channels, `44100` Hz; plug conversion test succeeded at `S16_LE`, `48` channels, `48000` Hz (`plughw:0,0`).
+- 2026-07-06: Added runtime dual-rate support in `audio-engine/src/main.rs` for `AUDIO_ENGINE_CAPTURE_RATE_HZ` (`44100` or `48000`) and documented current WING reference rate as `44100`.
+- 2026-07-06: Added modular input transport config in `audio-engine/src/main.rs` (`AUDIO_ENGINE_INPUT_TRANSPORT=alsa_usb|dante`) with fail-fast placeholder behavior for future Dante implementation.
+- 2026-07-06: Added `audio-engine/src/input_transport.rs` Dante backend skeleton contract (interface + validation) including planned `96000` Hz support and up to `64` sources.
+- 2026-07-06: Installed Rust + build tooling in LXC 200 and validated live `audio-engine` runtime against WING at `44100` Hz using `AUDIO_ENGINE_ALSA_DEVICE=plughw:0,0`; pipeline counters advanced continuously with no queue drops.
+- 2026-07-06: LXC 200 currently has rustup shims on PATH without a default toolchain; direct runs succeed using distro binaries (`/usr/bin/cargo` + `RUSTC=/usr/bin/rustc`) or by setting a rustup default in a follow-up.
+- 2026-07-06: Added bounded source-visibility test mode in `audio-engine/src/main.rs` via `AUDIO_ENGINE_TEST_DURATION_SECS` and `AUDIO_ENGINE_TEST_CHANNEL_COUNT`, with end-of-test per-channel activity summary output.
+- 2026-07-06: Completed 5-minute live visibility test in LXC 200 (`44100` Hz, `16` sources). Summary written to `/tmp/audio_engine_5min_16src.log`; highest-energy channels observed: 1, 2, 3, 6, 7, 10, 13.
+- 2026-07-06: Added configurable capture sample format in audio-engine (`s16_le` and `s24_in_32_le`) with WING-friendly default, and added control-plane settings API (`GET/PUT /settings/audio-input`, reset endpoint) to fetch/update mixer parameters post-setup.
+- 2026-07-06: Added repo-driven startup defaults to Proxmox bootstrap (`bdrs.sh`) with configurable `repoUrl` + `repoRef` (default `v0.2.0`) and automatic seeding of audio-engine/control-plane default settings from the checked out Git release.
 
 ## How to use this file
 
@@ -84,7 +103,7 @@ Tasks:
 Acceptance criteria:
 - [x] `audio-engine` builds cleanly (verified in LXC 200, 2026-07-02)
 - [x] `docker compose up` starts every declared service without immediate crash
-- [ ] New developer can follow README to run local baseline
+- [x] New developer can follow README to run local baseline
 
 ---
 
@@ -236,6 +255,11 @@ Acceptance criteria:
 - [ ] Security checks for exposed interfaces
 - [ ] Documentation updates for any behavior/config changes
 
+### Runtime Test Gate
+
+- [ ] Start live runtime tests only after USB audio transmission is operational end-to-end.
+- [ ] Until then, focus on implementation, configuration hardening, and unit-level validation.
+
 ---
 
 ## Immediate Next Sprint (recommended starting slice)
@@ -250,8 +274,8 @@ Acceptance criteria:
 - [ ] Verify startup ordering on host reboot
 
 3. Milestone 2:
-- [ ] Implement ALSA discovery and mock capture pipeline
-- [ ] Add packet structure and sequence/timestamp integrity tests
+- [x] Implement ALSA discovery and mock capture pipeline
+- [x] Add packet structure and sequence/timestamp integrity tests
 
 ---
 
@@ -264,3 +288,4 @@ Work through these in order before resuming milestone tasks.
 - [ ] 3. Document WING USB device node — run `lsusb` with WING connected, record the vendor:product ID, write a udev rule in `proxmox/` for persistent ALSA mapping *(skipped — requires physical WING connected)*
 - [x] 4. Fill in Proxmox network config — VLAN bridge assignments added to all three conf files (VLAN 10 audio, VLAN 20 management; single vmbr0 with tags)
 - [x] 5. Implement T1 ALSA capture thread in audio engine — start with mock output, then wire to real WING device
+- [x] 6. Add fail-fast config error for malformed `AUDIO_ENGINE_STREAM_GROUPS` with an example valid value in message

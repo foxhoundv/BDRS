@@ -133,7 +133,7 @@
     },
     "bootstrap": {
       "type": "object",
-      "required": ["firewallProfile", "startupOrder", "installBuildTooling"],
+      "required": ["firewallProfile", "startupOrder", "repoUrl", "repoRef", "syncDefaultsFromRepo", "installBuildTooling"],
       "properties": {
         "firewallProfile": {
           "type": "string",
@@ -143,6 +143,18 @@
         "startupOrder": {
           "type": "string",
           "default": "control-plane,audio-engine,recording"
+        },
+        "repoUrl": {
+          "type": "string",
+          "default": "https://github.com/foxhoundv/BDRS.git"
+        },
+        "repoRef": {
+          "type": "string",
+          "default": "v0.2.0"
+        },
+        "syncDefaultsFromRepo": {
+          "type": "boolean",
+          "default": true
         },
         "installBuildTooling": { "type": "boolean", "default": true }
       }
